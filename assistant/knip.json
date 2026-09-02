@@ -1,0 +1,34 @@
+{
+  "entry": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**/*.ts",
+    "scripts/**/*.ts",
+    "src/daemon/main.ts!",
+    "src/daemon/windows-compiled-entry.ts!",
+    "src/windows-compiled-entry.ts!",
+    "src/windows-compiled-worker-entry.ts!",
+    "src/plugin-api/index.ts!",
+    "src/api/index.ts!",
+    "src/config/bundled-skills/**/tools/**/*.ts!"
+  ],
+  "project": ["src/**/*.ts!", "src/**/*.tsx!", "scripts/**/*.ts"],
+  "ignore": ["src/config/preloaded-apps/**"],
+  "ignoreDependencies": [
+    "@microsoft/api-extractor",
+    "@forgeai/avatar-catalog",
+    "@forgeai/avatar-manifest",
+    "@forgeai/ces-client",
+    "@forgeai/credential-storage",
+    "@forgeai/egress-proxy",
+    "@forgeai/environments",
+    "@forgeai/gateway-client",
+    "@forgeai/ipc-server-utils",
+    "@forgeai/service-contracts",
+    "@forgeai/slack-text",
+    "@forgeai/twilio-client",
+    "@resvg/resvg-js-darwin-arm64",
+    "@resvg/resvg-js-darwin-x64",
+    "ajv",
+    "madge"
+  ]
+}

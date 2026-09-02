@@ -1,0 +1,14 @@
+import { TrustSecurityPrivacyDataContent } from "@/app/docs/_components/trust-security-privacy-data-content";
+import { createMetadata } from "@/lib/metadata";
+import { routes } from "@/lib/routes";
+
+export const metadata = createMetadata({
+  title: "Privacy & Data - Forge Docs",
+  description:
+    "Forge privacy and data — what stays local, what leaves your device, and what Forge never does.",
+  path: routes.docs.legal.privacyAndData,
+});
+
+export default function TrustSecurityPrivacyDataPage() {
+  return <TrustSecurityPrivacyDataContent />;
+}

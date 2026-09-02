@@ -1,0 +1,405 @@
+/**
+ * Ambient declaration of the `window.forge` bridge exposed by the Electron
+ * preload script (see `clients/macos/src/preload/index.ts`). Types are imported
+ * from `@forgeai/ipc-contract` — the single source of truth for IPC payload
+ * shapes shared by main, preload, and renderer.
+ *
+ * Feature code in `clients/web/` should NOT call `window.forge.*` directly.
+ * Instead, wrap each persisted capability in a per-feature module under
+ * `clients/web/src/runtime/` with named functions (see `native-biometric.ts`
+ * for the established shape: `isBiometricEnabled()` / `setBiometricEnabled()`).
+ * The module owns the cross-platform branch — `isElectron()` calls into
+ * `window.forge`, `isNativePlatform()` calls Capacitor, and the web branch
+ * uses `localStorage` — so consumers stay platform-agnostic.
+ */
+import type {
+  Lockfile,
+  LockfileWriteResult,
+} from "@forgeai/local-mode/contract";
+import type {
+  AppVersionInfo,
+  AssistantStatus,
+  BundleScanData,
+  CompanionCharacter,
+  CompanionGrowth,
+  CompanionContext,
+  CompanionIntroAction,
+  CompanionSurfaceState,
+  ConnectivityState,
+  DeepLink,
+  DictationOverlayHitRegion,
+  DictationOverlayMessage,
+  DictationOverlayState,
+  DictationPartialEvent,
+  DictationPartialsResult,
+  DictationTranscribeResult,
+  DownloadDoneEvent,
+  ElectronHostOS,
+  FnPushToTalkResult,
+  ModifierHold,
+  ModifierHoldRegistrationResult,
+  HelperRestartResult,
+  HelperState,
+  HotkeyEvent,
+  HotkeyEventState,
+  HotkeyScope,
+  LocalAssistantStatusResult,
+  LocalListDevicesResult,
+  LocalPairingPollResult,
+  LocalPairingStartResult,
+  LocalReadAssistantAvatarResult,
+  LocalRevokeDeviceResult,
+  LocalUpgradeOptions,
+  LocalWakeOptions,
+  NotificationActionEvent,
+  NotificationCategory,
+  PowerEvent,
+  PowerEventKind,
+  VoiceModeChord,
+  VoiceModeChordRegistrationResult,
+  ResolvedHotkey,
+  ShowNotificationPayload,
+  SystemPermissionKind,
+  SystemPermissionStateItem,
+  SystemPermissionStatus,
+  SystemPermissionsState,
+  TextInsertionResult,
+  TitleBarOverlayTheme,
+  UpdateState,
+  UpdateStatus,
+  ForgeCommand,
+  VoiceActivityContent,
+  VoiceActivityControl,
+  VoiceActivityControlAction,
+  VoiceActivityPhase,
+  VoiceActivityStart,
+  VoiceActivityState,
+} from "@forgeai/ipc-contract";
+
+export type {
+  AppVersionInfo,
+  AssistantStatus,
+  BundleScanData,
+  CompanionGrowth,
+  CompanionContext,
+  CompanionIntroAction,
+  CompanionSurfaceState,
+  ConnectivityState,
+  DeepLink,
+  DictationOverlayHitRegion,
+  DictationOverlayMessage,
+  DictationOverlayState,
+  DictationPartialEvent,
+  DictationPartialsResult,
+  DownloadDoneEvent,
+  FnPushToTalkResult,
+  HelperRestartResult,
+  HelperState,
+  HotkeyEvent,
+  HotkeyEventState,
+  HotkeyScope,
+  NotificationCategory,
+  PowerEvent,
+  PowerEventKind,
+  ResolvedHotkey,
+  SystemPermissionKind,
+  SystemPermissionStateItem,
+  SystemPermissionStatus,
+  SystemPermissionsState,
+  UpdateState,
+  UpdateStatus,
+  ForgeCommand,
+  VoiceActivityContent,
+  VoiceActivityControl,
+  VoiceActivityControlAction,
+  VoiceActivityPhase,
+  VoiceActivityStart,
+  VoiceActivityState,
+};
+
+// ─── Window augmentation ────────────────────────────────────────────────
+// The renderer's `window.forge` declaration intentionally marks many
+// capability groups optional for version-skew tolerance: a newer renderer
+// can run against an older Electron preload that predates a channel.
+// The `ForgeBridge` interface in the contract represents the canonical
+// (fully-wired) shape; the global declaration below is the renderer's
+// defensive view that guards on presence.
+
+declare global {
+  interface Window {
+    forge?: {
+      platform: "electron";
+      hostOS?: ElectronHostOS;
+      app: {
+        versionInfo(): Promise<AppVersionInfo>;
+        openWebsite(): Promise<void>;
+      };
+      text?: {
+        insertIntoFrontApp(text: string): Promise<TextInsertionResult>;
+        openAutomationSettings(): Promise<void>;
+      };
+      hotkeys?: {
+        get(): Promise<ResolvedHotkey[]>;
+        set(key: string, accelerator: string | null): Promise<void>;
+        onChange(callback: (catalog: ResolvedHotkey[]) => void): () => void;
+      };
+      launchAtLogin?: {
+        get(): Promise<boolean>;
+        set(enabled: boolean): Promise<void>;
+      };
+      featureFlags?: {
+        set(flags: Record<string, boolean>): void;
+      };
+      diagnostics?: {
+        setShareDiagnostics(enabled: boolean): void;
+      };
+      helper?: {
+        ping?(): Promise<"pong">;
+        getState?(): Promise<HelperState>;
+        restart?(): Promise<HelperRestartResult>;
+        onState?(callback: (state: HelperState) => void): () => void;
+        hotkey?: {
+          fnPushToTalk?(enable: boolean): Promise<FnPushToTalkResult>;
+          setVoiceModeChord?(
+            activator: VoiceModeChord | null,
+          ): Promise<VoiceModeChordRegistrationResult>;
+          setModifierHold?(
+            hold: ModifierHold,
+          ): Promise<ModifierHoldRegistrationResult>;
+          onRegistrationChange?(
+            callback: (active: boolean) => void,
+          ): () => void;
+          onEvent(callback: (event: HotkeyEvent) => void): () => void;
+        };
+        dictation?: {
+          setPartials(
+            enable: boolean,
+            deviceName?: string,
+            pushAudio?: boolean,
+          ): Promise<DictationPartialsResult>;
+          pushAudioChunk?(chunk: ArrayBuffer): void;
+          onPartial(
+            callback: (event: DictationPartialEvent) => void,
+          ): () => void;
+          onFinalized?(
+            callback: (event: DictationPartialEvent) => void,
+          ): () => void;
+          transcribe?(audio: ArrayBuffer): Promise<DictationTranscribeResult>;
+          onTranscribed?(
+            callback: (event: DictationPartialEvent) => void,
+          ): () => void;
+        };
+      };
+      permissions?: {
+        getState(): Promise<SystemPermissionsState>;
+        request(kind: SystemPermissionKind): Promise<SystemPermissionStateItem>;
+        openSettings(
+          kind: SystemPermissionKind,
+        ): Promise<SystemPermissionStateItem>;
+        quitAndReopen(): Promise<void>;
+        onState(callback: (state: SystemPermissionsState) => void): () => void;
+      };
+      commands: {
+        on(callback: (command: ForgeCommand) => void): () => void;
+      };
+      status?: {
+        setConnection(status: AssistantStatus): void;
+      };
+      identity?: {
+        setName(name: string): void;
+      };
+      icon?: {
+        setAvatar(png: Uint8Array | null): void;
+        setCharacter?(character: CompanionCharacter | null): void;
+      };
+      dock: {
+        setBadge(count: number): void;
+      };
+      share?: {
+        shareFile(bytes: Uint8Array, filename: string): Promise<void>;
+      };
+      downloads?: {
+        onDone(callback: (event: DownloadDoneEvent) => void): () => void;
+        reveal(id: string): Promise<void>;
+      };
+      menu: {
+        setPlatformSession(has: boolean): Promise<void>;
+        titles?(): Promise<Array<{ id: string; label: string }>>;
+        popup?(id: string, x: number, y: number): Promise<void>;
+      };
+      localMode: {
+        hatch(
+          species: string,
+          remote?: string,
+        ): Promise<{
+          ok: boolean;
+          assistantId?: string;
+          error?: string;
+        }>;
+        listDevices?(assistantId: string): Promise<LocalListDevicesResult>;
+        readLockfile(): Promise<Lockfile>;
+        saveLockfileAssistant(
+          assistant: Record<string, unknown>,
+          activeAssistant?: string,
+        ): Promise<LockfileWriteResult>;
+        renameLockfileAssistant?(
+          assistantId: string,
+          name: string,
+        ): Promise<LockfileWriteResult>;
+        stampLockfileAssistantOnboarded?(
+          assistantId: string,
+          onboardedAt: string,
+        ): Promise<LockfileWriteResult>;
+        replacePlatformAssistants(
+          platformAssistants: Array<Record<string, unknown>>,
+          organizationId?: string,
+        ): Promise<LockfileWriteResult>;
+        retire(assistantId: string): Promise<{ ok: boolean; error?: string }>;
+        revokeDevice?(
+          assistantId: string,
+          hashedDeviceId: string,
+        ): Promise<LocalRevokeDeviceResult>;
+        unpair?(assistantId: string): Promise<LockfileWriteResult>;
+        pairingStart?(address: string): Promise<LocalPairingStartResult>;
+        pairingPoll?(
+          handle: string,
+          name?: string,
+        ): Promise<LocalPairingPollResult>;
+        pairingCancel?(handle: string): Promise<{ ok: boolean }>;
+        sleep?(assistantId: string): Promise<{ ok: boolean; error?: string }>;
+        wake?(
+          assistantId: string,
+          options?: LocalWakeOptions,
+        ): Promise<{ ok: boolean; error?: string }>;
+        upgrade?(
+          assistantId: string,
+          options?: LocalUpgradeOptions,
+        ): Promise<{ ok: boolean; version?: string; error?: string }>;
+        status?(assistantId: string): Promise<LocalAssistantStatusResult>;
+        readAssistantAvatar?(
+          assistantId: string,
+        ): Promise<LocalReadAssistantAvatarResult>;
+        guardianToken(
+          assistantId: string,
+        ): Promise<
+          | { ok: true; accessToken: string }
+          | { ok: false; status: number; error: string }
+        >;
+      };
+      auth?: {
+        startOAuth(options: {
+          loginHint?: string;
+          intent?: string;
+        }): Promise<{ sessionToken: string }>;
+        cancelOAuth(): Promise<void>;
+        getSessionToken?(): string | null;
+        signOut?(): Promise<void>;
+      };
+      mainWindow: {
+        ensureVisible(): Promise<void>;
+        setOnboarding(active: boolean): Promise<void>;
+        setTitleBarOverlay?(colors: TitleBarOverlayTheme): Promise<void>;
+      };
+      power: {
+        onEvent(callback: (event: PowerEvent) => void): () => void;
+      };
+      deepLinks: {
+        drain(): Promise<DeepLink[]>;
+        onLink(callback: (link: DeepLink) => void): () => void;
+      };
+      fileOpen?: {
+        drain(): Promise<string[]>;
+        onFile(callback: (filePath: string) => void): () => void;
+      };
+      paths?: {
+        getPathForFile(file: File): string | null;
+      };
+      feedback?: {
+        diagnostics(): Promise<Record<string, unknown>>;
+        logs(): Promise<string>;
+      };
+      connectivity?: {
+        onState(callback: (state: ConnectivityState) => void): () => void;
+        get(): Promise<ConnectivityState>;
+        setDevice(online: boolean): void;
+        retry(): Promise<ConnectivityState>;
+      };
+      quickInput?: {
+        submit(message: string): Promise<void>;
+        dismiss(): Promise<void>;
+      };
+      commandPalette?: {
+        open(): Promise<void>;
+        dismiss(): Promise<void>;
+        select(command: ForgeCommand): Promise<void>;
+      };
+      dictationOverlay?: {
+        setState(state: DictationOverlayMessage): void;
+        onState(callback: (state: DictationOverlayState) => void): () => void;
+        getState(): Promise<DictationOverlayState | null>;
+        requestStop(): void;
+        onStopRequested(callback: () => void): () => void;
+        setInteractive(interactive: boolean): void;
+        setHitRegion?(region: DictationOverlayHitRegion | null): void;
+      };
+      notifications?: {
+        show(
+          payload: ShowNotificationPayload,
+        ): Promise<{ success: boolean; errorMessage?: string }>;
+        onAction(
+          callback: (event: NotificationActionEvent) => void,
+        ): () => void;
+      };
+      popout?: {
+        open(conversationId: string): Promise<void>;
+      };
+      bundleConfirm?: {
+        getData(): Promise<BundleScanData | null>;
+        respond(accepted: boolean): void;
+      };
+      update?: {
+        getState(): Promise<UpdateState>;
+        check(): Promise<void>;
+        install(): Promise<void>;
+        onState(callback: (state: UpdateState) => void): () => void;
+      };
+      voiceActivity?: {
+        start(state: VoiceActivityStart): void;
+        update(content: VoiceActivityContent): void;
+        end(): void;
+        control(control: VoiceActivityControl): void;
+        onControl(
+          callback: (control: VoiceActivityControl) => void,
+        ): () => void;
+      };
+      companion?: {
+        getState(): Promise<CompanionSurfaceState | null>;
+        onState(callback: (state: CompanionSurfaceState) => void): () => void;
+        setInteractive?(interactive: boolean): void;
+        moveBy?(dx: number, dy: number): void;
+        startVoice?(): void;
+        toggleWatch?(): void;
+        answerWatchRetro?(open: boolean): void;
+        activate?(): void;
+        setContext?(context: CompanionContext): void;
+        advanceIntro?(action: CompanionIntroAction): void;
+        showContextMenu?(): void;
+      };
+    };
+  }
+}
+
+/**
+ * True when the renderer is running inside the Electron host. Safe to call
+ * server-side / before hydration — falls through to `false` when `window`
+ * isn't defined yet.
+ *
+ * Use this to branch behavior that differs between the web host and the
+ * Electron host. For branches that differ between web and Capacitor iOS,
+ * use `isNativePlatform` from `@/runtime/native-auth.js` instead.
+ */
+export function isElectron(): boolean {
+  return (
+    typeof window !== "undefined" && window.forge?.platform === "electron"
+  );
+}

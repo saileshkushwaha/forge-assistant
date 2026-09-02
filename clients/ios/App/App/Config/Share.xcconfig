@@ -1,0 +1,12 @@
+// Share.xcconfig - production Share extension overrides.
+// The bundle ID must stay prefixed by App.xcconfig's, and the URL scheme
+// and App Group must match App.xcconfig's character for character.
+
+#include "Share-Base.xcconfig"
+
+APP_GROUP_ID = group.ai.vocify-inc.forge-assistant-ios
+BUNDLE_DISPLAY_NAME = Forge
+BUNDLE_URL_SCHEME = forge-assistant
+PRODUCT_BUNDLE_IDENTIFIER = ai.vocify-inc.forge-assistant-ios.Share
+
+PROVISIONING_PROFILE_SPECIFIER_Manual = Forge Assistant iOS Share Distribution

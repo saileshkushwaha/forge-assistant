@@ -1,0 +1,14 @@
+{
+  "entry": ["src/**/*.test.ts", "src/**/__tests__/**/*.ts", "src/cli/index.ts"],
+  "project": ["src/**/*.ts"],
+  "ignoreDependencies": [
+    "@forgeai/assistant-client",
+    "@forgeai/ces-client",
+    "@forgeai/environments",
+    "@forgeai/gateway-client",
+    "@forgeai/ipc-server-utils",
+    "@forgeai/service-contracts",
+    "@forgeai/slack-text",
+    "@forgeai/twilio-client"
+  ]
+}

@@ -1,0 +1,259 @@
+/**
+ * Centralized environment variable registry.
+ *
+ * This module documents every FORGE_* and related env var with its type,
+ * default, and description, and exports typed accessor functions for each.
+ *
+ * IMPORTANT: This module has NO internal imports (no logger, no platform
+ * utilities) so it can be safely imported from bootstrap-level code like
+ * util/platform.ts and util/logger.ts without circular dependencies.
+ *
+ * Higher-level env vars that depend on the logger or config system live in
+ * config/env.ts, which re-exports selected accessors from this module.
+ */
+
+// ── Helpers (dependency-free) ────────────────────────────────────────────────
+
+function str(name: string): string | undefined {
+  const v = process.env[name]?.trim();
+  return v || undefined;
+}
+
+function flag(name: string): boolean {
+  const raw = str(name);
+  return raw === "true" || raw === "1";
+}
+
+function int(name: string): number | undefined {
+  const raw = str(name);
+  if (raw === undefined) {
+    return undefined;
+  }
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+// ── Registry ─────────────────────────────────────────────────────────────────
+// Each entry documents the env var name, type, default, and purpose.
+
+/**
+ * DEBUG_STDOUT_LOGS — boolean, default: false
+ * Enables additional log output to stdout (alongside file logging).
+ */
+export function getDebugStdoutLogs(): boolean {
+  return flag("DEBUG_STDOUT_LOGS");
+}
+
+/**
+ * IS_CONTAINERIZED — boolean, default: false
+ * When true, indicates the assistant is running inside a container (e.g. Docker).
+ * Persistent data is stored in FORGE_WORKSPACE_DIR (mapped to a dedicated volume).
+ */
+export function getIsContainerized(): boolean {
+  return flag("IS_CONTAINERIZED");
+}
+
+/**
+ * IS_PLATFORM — boolean, default: false
+ * When true, indicates the assistant is running as a platform-managed
+ * remote instance. Controls platform-specific behaviors like webhook
+ * callback registration and blocking `platform disconnect`.
+ *
+ * Separate from IS_CONTAINERIZED because local Docker assistants are
+ * containerized (need CES sidecar, gateway trust store, etc.) but are
+ * not platform-managed.
+ */
+export function getIsPlatform(): boolean {
+  return flag("IS_PLATFORM");
+}
+
+/**
+ * Whether this assistant is running as a platform-managed remote instance.
+ */
+export function isPlatformRemote(): boolean {
+  return getIsPlatform();
+}
+
+/**
+ * FORGE_DISABLE_PLATFORM — boolean, default: false
+ * When true, all outbound platform API calls in local mode are suppressed.
+ * The daemon, gateway, and web UI each no-op platform requests with a
+ * debug log. Has no effect when IS_PLATFORM is true (platform-managed
+ * instances always connect to the platform).
+ */
+export function getDisablePlatform(): boolean {
+  return flag("FORGE_DISABLE_PLATFORM");
+}
+
+/**
+ * FORGE_DEVICE_ID — string, default: undefined
+ * Host-stable device id injected by the CLI into containerized deployments,
+ * where the container fs cannot persist device.json across recreation.
+ * Takes precedence over device.json resolution in util/device-id.ts.
+ */
+export function getDeviceIdOverride(): string | undefined {
+  return str("FORGE_DEVICE_ID");
+}
+
+/**
+ * FORGE_WORKSPACE_DIR — string, default: undefined
+ * Overrides the default workspace directory.
+ * Used in containerized deployments where the workspace is a separate volume.
+ */
+export function getWorkspaceDirOverride(): string | undefined {
+  return str("FORGE_WORKSPACE_DIR");
+}
+
+/**
+ * FORGE_BACKUP_DIR — string, default: undefined
+ * Overrides the default backup root directory (~/.forge/backups/).
+ * Used in containerized deployments where the backup directory must be
+ * on a persistent volume.
+ */
+export function getBackupDirOverride(): string | undefined {
+  return str("FORGE_BACKUP_DIR");
+}
+
+/**
+ * FORGE_BACKUP_KEY_PATH — string, default: undefined
+ * Overrides the default backup encryption key path (~/.forge/protected/backup.key).
+ * Used in containerized deployments where the key must be on a persistent volume.
+ */
+export function getBackupKeyPathOverride(): string | undefined {
+  return str("FORGE_BACKUP_KEY_PATH");
+}
+
+// ── Profiler env vars ───────────────────────────────────────────────────
+// These are injected by the platform when running a managed assistant in
+// profiler mode. The runtime uses them to locate, scope, and budget-limit
+// profiler output on the workspace volume.
+
+/**
+ * FORGE_CPU_LIMIT — string (K8s resource format), default: undefined
+ * The CPU resource limit for the container (e.g. "2000m", "2").
+ * Set by the platform StatefulSet template to the exact K8s CPU limit.
+ * Used by the health endpoint to report accurate CPU core count inside
+ * gVisor sandboxes where cgroup files may expose the host node's CPUs.
+ */
+export function getCpuLimit(): string | undefined {
+  return str("FORGE_CPU_LIMIT");
+}
+
+/**
+ * FORGE_MINIKUBE_STORAGE_SIZE — string (K8s resource format), default: undefined
+ * The PVC storage request size for the assistant volume (e.g. "10Gi").
+ * Only set in minikube (local dev) mode. Used by the health endpoint to
+ * report accurate disk capacity on hostPath-backed PVCs where statfsSync
+ * reports the host's entire filesystem instead of the PVC.
+ */
+export function getMinikubeStorageSize(): string | undefined {
+  return str("FORGE_MINIKUBE_STORAGE_SIZE");
+}
+
+/**
+ * FORGE_PROFILER_RUN_ID — string, default: undefined
+ * Unique identifier for the current profiler run. When set, the profiler
+ * run store treats this run as "active" and will never prune its directory.
+ */
+export function getProfilerRunId(): string | undefined {
+  return str("FORGE_PROFILER_RUN_ID");
+}
+
+/**
+ * FORGE_PROFILER_MODE — string, default: undefined
+ * The profiling mode to activate (e.g. "cpu", "heap", "cpu+heap").
+ * When unset, profiling is disabled.
+ */
+export function getProfilerMode(): string | undefined {
+  return str("FORGE_PROFILER_MODE");
+}
+
+/**
+ * FORGE_PROFILER_MAX_BYTES — integer, default: undefined
+ * Maximum total bytes retained across all profiler runs (including active).
+ * The startup sweep prunes oldest completed runs to stay within budget.
+ */
+export function getProfilerMaxBytes(): number | undefined {
+  return int("FORGE_PROFILER_MAX_BYTES");
+}
+
+/**
+ * FORGE_PROFILER_MAX_RUNS — integer, default: undefined
+ * Maximum number of completed profiler runs retained on disk.
+ * The startup sweep prunes oldest completed runs to stay within budget.
+ */
+export function getProfilerMaxRuns(): number | undefined {
+  return int("FORGE_PROFILER_MAX_RUNS");
+}
+
+/**
+ * FORGE_PROFILER_MIN_FREE_MB — integer, default: undefined
+ * Minimum free disk space (in megabytes) that must remain after profiler
+ * runs are accounted for. The startup sweep prunes oldest completed runs
+ * until at least this much free space is available.
+ */
+export function getProfilerMinFreeMb(): number | undefined {
+  return int("FORGE_PROFILER_MIN_FREE_MB");
+}
+
+// ── Known env var names ──────────────────────────────────────────────────────
+
+/**
+ * Complete set of recognized FORGE_* env var names. Used by validateEnvVars()
+ * to warn about typos or unrecognized variables.
+ */
+const KNOWN_FORGE_VARS = new Set([
+  "FORGE_ASSISTANT_NAME",
+  "FORGE_ASSISTANT_PLATFORM_URL",
+  "FORGE_AWS_ROLE_ARN",
+  "FORGE_BACKUP_DIR",
+  "FORGE_BACKUP_KEY_PATH",
+  "FORGE_CLOUD",
+  "FORGE_DAEMON_AUTOSTART",
+  "FORGE_DATA_DIR",
+  "FORGE_DEBUG",
+  "FORGE_DESKTOP_APP",
+  "FORGE_DEV",
+  "FORGE_DEVICE_ID",
+  "FORGE_DISABLE_PLATFORM",
+  "FORGE_DOCS_BASE_URL",
+  "FORGE_ENVIRONMENT",
+  "FORGE_HATCHED_BY",
+  "FORGE_HOOK_EVENT",
+  "FORGE_HOOK_NAME",
+  "FORGE_HOOK_SETTINGS",
+  "FORGE_LOCKFILE_DIR",
+  "FORGE_MIGRATION_EXPORT_ALLOWED_HOSTS",
+  "FORGE_MIGRATION_IMPORT_ALLOWED_HOSTS",
+  "FORGE_PLATFORM_URL",
+  "FORGE_PROFILER_MAX_BYTES",
+  "FORGE_PROFILER_MAX_RUNS",
+  "FORGE_PROFILER_MIN_FREE_MB",
+  "FORGE_PROFILER_MODE",
+  "FORGE_PROFILER_RUN_ID",
+  "FORGE_ROOT_DIR",
+  "FORGE_SSH_USER",
+  "FORGE_WORKSPACE_DIR",
+  "FORGE_CPU_LIMIT",
+  "FORGE_MEMORY_LIMIT",
+  "FORGE_MINIKUBE_STORAGE_SIZE",
+  "FORGE_ONNX_INTRA_OP_THREADS",
+]);
+
+/**
+ * Check all FORGE_* env vars and return warnings for any unrecognized ones.
+ * Returns an array of warning messages (empty if all vars are recognized).
+ *
+ * This is intentionally a pure function that returns strings rather than
+ * logging directly, so it can be called from bootstrap code before the
+ * logger is initialized.
+ */
+export function checkUnrecognizedEnvVars(): string[] {
+  const warnings: string[] = [];
+  for (const key of Object.keys(process.env)) {
+    if (key.startsWith("FORGE_") && !KNOWN_FORGE_VARS.has(key)) {
+      warnings.push(`Unrecognized environment variable: ${key}`);
+    }
+  }
+  return warnings;
+}

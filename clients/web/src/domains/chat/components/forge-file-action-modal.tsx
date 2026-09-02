@@ -1,0 +1,108 @@
+import {
+  ArrowDownToLine,
+  ExternalLink,
+  FileText,
+  Image as ImageIcon,
+  Video,
+  type LucideIcon,
+} from "lucide-react";
+
+import { Button } from "@forgeai/design-library/components/button";
+import { Modal } from "@forgeai/design-library/components/modal";
+
+import { useTranslation } from "@/i18n";
+
+/** A `forge://` file link the user clicked, pending an action choice. */
+export interface ForgeFileActionTarget {
+  /** Decoded display filename (resolved via the shared attachment-naming rule). */
+  filename: string;
+  /**
+   * Workspace-relative path when the file lives in the assistant workspace.
+   * Absent for `forge://host/` links, which cannot open in the workspace
+   * browser — the modal then offers download only.
+   */
+  workspacePath?: string;
+}
+
+const IMAGE_EXTENSIONS = new Set([
+  "png",
+  "jpg",
+  "jpeg",
+  "gif",
+  "webp",
+  "svg",
+  "bmp",
+  "heic",
+]);
+
+const VIDEO_EXTENSIONS = new Set(["mp4", "mov", "webm", "mkv", "avi"]);
+
+function iconForFilename(filename: string): LucideIcon {
+  const extension = filename.split(".").pop()?.toLowerCase() ?? "";
+  if (IMAGE_EXTENSIONS.has(extension)) {
+    return ImageIcon;
+  }
+  if (VIDEO_EXTENSIONS.has(extension)) {
+    return Video;
+  }
+  return FileText;
+}
+
+/**
+ * Action chooser shown when a `forge://` file link is clicked in chat:
+ * "Go to file" opens the file in the workspace browser (workspace files
+ * only), "Download file" saves it locally.
+ */
+export function ForgeFileActionModal({
+  target,
+  onGoToFile,
+  onDownload,
+  onClose,
+}: {
+  target: ForgeFileActionTarget | null;
+  onGoToFile: () => void;
+  onDownload: () => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation("chat");
+  // Mounted only while a link click is pending an action choice — the
+  // transcript renders one instance per message row, so an always-mounted
+  // dialog would add per-row Radix overhead for a modal that is almost
+  // never open.
+  if (target == null) {
+    return null;
+  }
+  return (
+    <Modal.Root
+      open
+      onOpenChange={(open) => {
+        if (!open) {
+          onClose();
+        }
+      }}
+    >
+      <Modal.Content size="sm">
+        <Modal.Header icon={iconForFilename(target.filename)}>
+          <Modal.Title>{target.filename}</Modal.Title>
+          {target.workspacePath ? (
+            <Modal.Description className="truncate font-mono">
+              {target.workspacePath}
+            </Modal.Description>
+          ) : null}
+        </Modal.Header>
+        <Modal.Footer>
+          {target.workspacePath ? (
+            <Button variant="outlined" onClick={onGoToFile}>
+              <ExternalLink aria-hidden className="h-4 w-4" />
+              {t("forgeFileActionModal.goToFile")}
+            </Button>
+          ) : null}
+          <Button variant="primary" onClick={onDownload}>
+            <ArrowDownToLine aria-hidden className="h-4 w-4" />
+            {t("forgeFileActionModal.downloadFile")}
+          </Button>
+        </Modal.Footer>
+      </Modal.Content>
+    </Modal.Root>
+  );
+}

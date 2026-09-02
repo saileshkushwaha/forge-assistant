@@ -1,0 +1,15 @@
+import type {
+  CapabilityModule,
+  DesktopCapabilityRegistry,
+} from "@forgeai/electron-desktop/capability-registry";
+
+import { installAutoUpdate } from "../auto-update";
+
+const autoUpdateFeature: CapabilityModule<DesktopCapabilityRegistry> = {
+  id: "auto-update",
+  install: () => {
+    installAutoUpdate();
+  },
+};
+
+export default autoUpdateFeature;

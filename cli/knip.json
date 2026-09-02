@@ -1,0 +1,18 @@
+{
+  "entry": [
+    "src/**/*.test.ts",
+    "src/**/__tests__/**/*.ts",
+    "src/lib/version-compat.ts",
+    "src/lib/platform-releases.ts",
+    "src/lib/cli-error.ts"
+  ],
+  "project": ["src/**/*.ts", "src/**/*.tsx"],
+  "ignoreDependencies": [
+    "@forgeai/avatar-manifest",
+    "@forgeai/environments",
+    "@forgeai/ipc-server-utils",
+    "@forgeai/local-mode",
+    "@forgeai/service-contracts",
+    "@forgeai/web"
+  ]
+}

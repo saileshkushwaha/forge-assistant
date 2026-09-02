@@ -1,0 +1,256 @@
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+
+import {
+  readTakeoverAvatarStash,
+  saveTakeoverAvatarStash,
+} from "@/lib/billing/takeover-avatar-stash";
+import type { CharacterTraits } from "@/types/avatar";
+import { BUNDLED_COMPONENTS } from "@/utils/avatar-bundled-components";
+
+import { clearUserScopedStorage } from "./session-cleanup";
+
+const STASH_TRAITS: CharacterTraits = {
+  bodyShape: "blob",
+  eyeStyle: "curious",
+  color: "purple",
+};
+
+beforeEach(() => {
+  localStorage.clear();
+  sessionStorage.clear();
+});
+
+afterEach(() => {
+  localStorage.clear();
+  sessionStorage.clear();
+});
+
+describe("clearUserScopedStorage", () => {
+  test("clears sessionStorage entirely", () => {
+    sessionStorage.setItem("forge:edit-chat:asst-1:app-1", "conv-xyz");
+    sessionStorage.setItem("arbitrary-session-key", "data");
+
+    clearUserScopedStorage();
+
+    expect(sessionStorage.length).toBe(0);
+  });
+
+  test("clears a takeover avatar stash whose write never reached storage", () => {
+    // That stash lives only in the module's in-memory mirror, so
+    // `sessionStorage.clear()` cannot reach it and logout has to clear the
+    // module outright.
+    const original = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "sessionStorage",
+    )!;
+    Object.defineProperty(globalThis, "sessionStorage", {
+      configurable: true,
+      get: () => ({
+        clear: () => {},
+        getItem: () => null,
+        setItem: () => {
+          throw new Error("quota exceeded");
+        },
+        removeItem: () => {},
+      }),
+    });
+    try {
+      saveTakeoverAvatarStash({
+        assistantId: "a1",
+        components: BUNDLED_COMPONENTS,
+        traits: STASH_TRAITS,
+      });
+      expect(readTakeoverAvatarStash()).not.toBeNull();
+
+      clearUserScopedStorage();
+
+      expect(readTakeoverAvatarStash()).toBeNull();
+    } finally {
+      Object.defineProperty(globalThis, "sessionStorage", original);
+    }
+  });
+
+  test("removes all forge: prefixed keys from localStorage", () => {
+    localStorage.setItem("forge:pinnedApps", "[]");
+    localStorage.setItem("forge:lastViewedConversation:asst-1", "conv-1");
+    localStorage.setItem("forge:sidebar-open-categories:asst-1", "{}");
+    localStorage.setItem("forge:sidebar-open-custom-groups:asst-1", "{}");
+    localStorage.setItem("forge:selectedAssistantId", "asst-1");
+    localStorage.setItem("forge:nudge-prefs", "{}");
+    localStorage.setItem("forge:chatDrafts:asst-1", '{"text":"hi"}');
+    localStorage.setItem("forge:ctxwindow:asst-1", "4096");
+    localStorage.setItem("forge:dismissed-surfaces:asst-1", "[]");
+    localStorage.setItem("forge:ff:some-flag", "true");
+    localStorage.setItem("forge:onboarding:tosAccepted", "true");
+    localStorage.setItem("forge:onboarding:aiDataConsent", "true");
+    localStorage.setItem("forge:onboarding:completed", "true");
+    localStorage.setItem("forge:onboarding:selectedVersion", "v1.0");
+    localStorage.setItem("forge:integrations:bannerDismissed", "true");
+    localStorage.setItem("forge:voice:activationKey", "Space");
+    // eslint-disable-next-line no-restricted-syntax -- test: verifying cleanup of user-scoped storage keys
+    localStorage.setItem("forge:voice:ttsApiKey:openai", "test-value");
+    // eslint-disable-next-line no-restricted-syntax -- test: verifying cleanup of user-scoped storage keys
+    localStorage.setItem("forge:voice:sttApiKey:openai", "test-value");
+    // eslint-disable-next-line no-restricted-syntax -- test: verifying cleanup of user-scoped storage keys
+    localStorage.setItem("forge:gw:token", "jwt-token");
+    localStorage.setItem("forge:local:lockfile", "{}");
+    localStorage.setItem("forge:ai:imageGenMode", "enabled");
+    localStorage.setItem("forge:debug:impersonateAssistantVersion", "0.8.6");
+    localStorage.setItem("forge:sidebar:collapsed", "true");
+    localStorage.setItem("forge:sidebar:width", "300");
+    localStorage.setItem("forge:diskPressureDismissed:asst-1", "true");
+    localStorage.setItem("forge:skills:tipDismissed", "true");
+
+    clearUserScopedStorage();
+
+    expect(localStorage.length).toBe(0);
+  });
+
+  test("preserves device: prefixed keys", () => {
+    localStorage.setItem("device:theme", "dark");
+    localStorage.setItem("device:share_analytics", "true");
+    localStorage.setItem("device:share_diagnostics", "false");
+    localStorage.setItem("device:biometric_enabled", "false");
+    localStorage.setItem("device:llm_log_retention", "dontRetain");
+    localStorage.setItem("device:timezone", "America/New_York");
+    localStorage.setItem("device:media_embeds_enabled", "false");
+    localStorage.setItem("device:media_embed_domains", '["youtube.com"]');
+    localStorage.setItem("device:last_user_id", "user-123");
+
+    clearUserScopedStorage();
+
+    expect(localStorage.getItem("device:theme")).toBe("dark");
+    expect(localStorage.getItem("device:share_analytics")).toBe("true");
+    expect(localStorage.getItem("device:share_diagnostics")).toBe("false");
+    expect(localStorage.getItem("device:biometric_enabled")).toBe("false");
+    expect(localStorage.getItem("device:llm_log_retention")).toBe("dontRetain");
+    expect(localStorage.getItem("device:timezone")).toBe("America/New_York");
+    expect(localStorage.getItem("device:media_embeds_enabled")).toBe("false");
+    expect(localStorage.getItem("device:media_embed_domains")).toBe(
+      '["youtube.com"]',
+    );
+    expect(localStorage.getItem("device:last_user_id")).toBe("user-123");
+  });
+
+  test("automatically clears future forge: keys without needing explicit registration", () => {
+    localStorage.setItem("forge:some-future-feature:asst-1", "data");
+    localStorage.setItem("forge:another-feature", "value");
+
+    clearUserScopedStorage();
+
+    expect(localStorage.length).toBe(0);
+  });
+
+  test("future device: keys are automatically preserved", () => {
+    localStorage.setItem("device:some_new_setting", "value");
+    localStorage.setItem("device:another_setting", "data");
+
+    clearUserScopedStorage();
+
+    expect(localStorage.getItem("device:some_new_setting")).toBe("value");
+    expect(localStorage.getItem("device:another_setting")).toBe("data");
+  });
+
+  test("leaves third-party keys untouched", () => {
+    localStorage.setItem("_ga", "GA1.2.123456");
+    localStorage.setItem("intercom-session", "abc");
+    localStorage.setItem("some-other-sdk", "data");
+
+    clearUserScopedStorage();
+
+    expect(localStorage.getItem("_ga")).toBe("GA1.2.123456");
+    expect(localStorage.getItem("intercom-session")).toBe("abc");
+    expect(localStorage.getItem("some-other-sdk")).toBe("data");
+  });
+
+  test("removes forge: keys while preserving device: and third-party keys", () => {
+    localStorage.setItem("device:theme", "dark");
+    localStorage.setItem("device:share_analytics", "true");
+    localStorage.setItem("forge:pinnedApps", "[]");
+    localStorage.setItem("forge:ff:my-flag", "true");
+    localStorage.setItem("forge:onboarding:completed", "true");
+    localStorage.setItem("_ga", "GA1.2.123456");
+
+    clearUserScopedStorage();
+
+    expect(localStorage.getItem("device:theme")).toBe("dark");
+    expect(localStorage.getItem("device:share_analytics")).toBe("true");
+    expect(localStorage.getItem("_ga")).toBe("GA1.2.123456");
+    expect(localStorage.getItem("forge:pinnedApps")).toBeNull();
+    expect(localStorage.getItem("forge:ff:my-flag")).toBeNull();
+    expect(localStorage.getItem("forge:onboarding:completed")).toBeNull();
+  });
+
+  test("preserves active app. nudge keys on logout", () => {
+    localStorage.setItem("app.iosNudge.downloaded", "true");
+    localStorage.setItem("app.macOsNudge.bannerDismissed", "true");
+    localStorage.setItem("app.githubNudge.starred", "true");
+
+    clearUserScopedStorage();
+
+    // Active native/macOS nudge keys must survive logout because the nudge
+    // modules still read them.
+    // Dead github/discord keys are removed at startup by removeKey()
+    // in storage-migration.ts, not by the logout sweep.
+    expect(localStorage.getItem("app.iosNudge.downloaded")).toBe("true");
+    expect(localStorage.getItem("app.macOsNudge.bannerDismissed")).toBe("true");
+    expect(localStorage.getItem("app.githubNudge.starred")).toBe("true");
+  });
+
+  test("clears legacy prefixed keys if startup migration failed", () => {
+    // eslint-disable-next-line no-restricted-syntax -- test: verifying cleanup of legacy auth token
+    localStorage.setItem("gw:token", "legacy-jwt-token");
+    // generic-examples:ignore-next-line — reason: epoch timestamp for token expiry, not a phone number
+    localStorage.setItem("gw:expiresAt", "9999999999");
+    localStorage.setItem("voice:ttsProvider", "elevenlabs");
+    localStorage.setItem("onboarding.completed", "true");
+    localStorage.setItem("ff:client:darkMode", "true");
+    localStorage.setItem("local:lockfile", "{}");
+    localStorage.setItem("integrations.bannerDismissed", "true");
+    localStorage.setItem(
+      "forgeDebug.flags.impersonateAssistantVersion",
+      "0.8.6",
+    );
+    localStorage.setItem("forge_image_gen_mode", "enabled");
+
+    clearUserScopedStorage();
+
+    expect(localStorage.getItem("gw:token")).toBeNull();
+    expect(localStorage.getItem("gw:expiresAt")).toBeNull();
+    expect(localStorage.getItem("voice:ttsProvider")).toBeNull();
+    expect(localStorage.getItem("onboarding.completed")).toBeNull();
+    expect(localStorage.getItem("ff:client:darkMode")).toBeNull();
+    expect(localStorage.getItem("local:lockfile")).toBeNull();
+    expect(localStorage.getItem("integrations.bannerDismissed")).toBeNull();
+    expect(
+      localStorage.getItem("forgeDebug.flags.impersonateAssistantVersion"),
+    ).toBeNull();
+    expect(localStorage.getItem("forge_image_gen_mode")).toBeNull();
+  });
+
+  test("preserves legacy device-level keys from cleanup", () => {
+    localStorage.setItem("forge_theme", "dark");
+    localStorage.setItem("forge_share_analytics", "true");
+    localStorage.setItem("forge_share_diagnostics", "false");
+    localStorage.setItem("forge_biometric_enabled", "false");
+    localStorage.setItem("forge_llm_log_retention", "dontRetain");
+    localStorage.setItem("forge_timezone", "America/New_York");
+    localStorage.setItem("forge_media_embeds_enabled", "false");
+    localStorage.setItem("forge_media_embed_domains", '["youtube.com"]');
+    localStorage.setItem("onboarding.lastUserId", "user-123");
+
+    clearUserScopedStorage();
+
+    expect(localStorage.getItem("forge_theme")).toBe("dark");
+    expect(localStorage.getItem("forge_share_analytics")).toBe("true");
+    expect(localStorage.getItem("forge_share_diagnostics")).toBe("false");
+    expect(localStorage.getItem("forge_biometric_enabled")).toBe("false");
+    expect(localStorage.getItem("forge_llm_log_retention")).toBe("dontRetain");
+    expect(localStorage.getItem("forge_timezone")).toBe("America/New_York");
+    expect(localStorage.getItem("forge_media_embeds_enabled")).toBe("false");
+    expect(localStorage.getItem("forge_media_embed_domains")).toBe(
+      '["youtube.com"]',
+    );
+    expect(localStorage.getItem("onboarding.lastUserId")).toBe("user-123");
+  });
+});

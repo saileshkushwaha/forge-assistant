@@ -1,0 +1,281 @@
+import * as Dialog from "@radix-ui/react-dialog";
+import { type LucideIcon } from "lucide-react";
+import { createContext, useContext, type ComponentProps, type ReactNode } from "react";
+
+import { cn } from "../utils/cn";
+import { usePortalContainer } from "../utils/portal-container";
+
+/**
+ * Internal context that threads `onOpenChange` from `Root` to `Content` so
+ * the overlay can explicitly dismiss the sheet on click.
+ *
+ * iOS Safari/WKWebView only fires `click` events from elements it considers
+ * "clickable" (has a click handler, cursor: pointer, or is natively
+ * interactive). Radix's DismissableLayer defers touch-dismiss to a `click`
+ * listener on the document, which never fires from the plain overlay div on
+ * iOS. An explicit `onClick` on the overlay makes it "clickable" per iOS's
+ * rules and ensures the sheet dismisses on tap-outside.
+ *
+ * @see https://developer.apple.com/library/archive/documentation/AppleApplications/Reference/SafariWebContent/HandlingEvents/HandlingEvents.html
+ */
+const BottomSheetContext = createContext<{
+  onOpenChange?: (open: boolean) => void;
+}>({});
+
+/**
+ * `BottomSheet` primitive built on `@radix-ui/react-dialog`.
+ *
+ * A full-width dialog anchored to the bottom of the viewport with rounded
+ * top corners and a slide-up entrance animation. Designed for mobile
+ * surfaces like menus, pickers, and confirmation sheets.
+ *
+ * The default height band (`min-h`/`max-h` on `Content`) suits those: enough
+ * floor that one row still reads as a sheet, and a ceiling that leaves the
+ * page visible behind it. A sheet that should rest against something specific
+ * instead (below a header, say) overrides that band and sets its own `top`;
+ * `className` merges over the defaults.
+ *
+ * Compound API: `BottomSheet.Root`, `BottomSheet.Trigger`,
+ * `BottomSheet.Content`, `BottomSheet.Title`, `BottomSheet.Description`,
+ * `BottomSheet.Close`, `BottomSheet.Grabber`, `BottomSheet.Header`,
+ * `BottomSheet.Body`, `BottomSheet.Footer`.
+ *
+ * Adoption is consumer-driven: consumers decide whether to mount
+ * `BottomSheet.Root` or an anchored surface such as `Popover.Root`. That
+ * choice belongs to the input-capability axis (a narrow viewport with a
+ * coarse pointer), not to viewport width alone, so a narrow desktop window
+ * driven by a mouse keeps the anchored surface.
+ *
+ * @see https://www.radix-ui.com/primitives/docs/components/dialog
+ */
+
+function Root({
+  onOpenChange,
+  ...props
+}: ComponentProps<typeof Dialog.Root>) {
+  return (
+    <BottomSheetContext value={{ onOpenChange }}>
+      <Dialog.Root onOpenChange={onOpenChange} {...props} />
+    </BottomSheetContext>
+  );
+}
+
+function Trigger(props: ComponentProps<typeof Dialog.Trigger>) {
+  return <Dialog.Trigger data-slot="bottom-sheet-trigger" {...props} />;
+}
+
+interface BottomSheetContentProps extends ComponentProps<typeof Dialog.Content> {
+  overlayClassName?: string;
+  /**
+   * Whether the sheet insets its content. Sheets carrying rows of text and
+   * controls want the inset; sheets whose content is itself a surface (a
+   * full-bleed color fill, a canvas, artwork that must reach the rounded
+   * corners) supply their own spacing and set this false. The safe-area
+   * allowance goes with it, so an unpadded sheet is responsible for keeping
+   * its own content clear of the home indicator.
+   */
+  padded?: boolean;
+  children?: ReactNode;
+}
+
+function Content({
+  overlayClassName,
+  className,
+  padded = true,
+  children,
+  ref,
+  ...props
+}: BottomSheetContentProps) {
+  const container = usePortalContainer();
+  const { onOpenChange } = useContext(BottomSheetContext);
+  return (
+    <Dialog.Portal container={container ?? undefined}>
+      <Dialog.Overlay
+        data-slot="bottom-sheet-overlay"
+        className={cn("fixed inset-0 z-50 bg-black/50", overlayClassName)}
+        onClick={() => onOpenChange?.(false)}
+      />
+      <Dialog.Content
+        ref={ref}
+        data-slot="bottom-sheet-content"
+        className={cn(
+          "fixed inset-x-0 bottom-0 z-50 flex w-full flex-col rounded-t-[24px] border-t bg-[var(--surface-lift)] border-[var(--border-base)] shadow-xl focus:outline-none",
+          // Sheets keep a floor so short content (e.g. a single row) still
+          // reads as a sheet rather than a sliver pinned to the bottom edge.
+          "min-h-[min(280px,45dvh)] max-h-[50dvh]",
+          "data-[state=open]:animate-[bottomSheetIn_180ms_ease-out]",
+          className,
+        )}
+        {...props}
+      >
+        <div
+          data-slot="bottom-sheet-content-inner"
+          className={cn(
+            "flex min-h-0 flex-1 flex-col",
+            padded &&
+              "px-4 pt-4 pb-[calc(16px+var(--safe-area-inset-bottom,env(safe-area-inset-bottom,0px)))]",
+          )}
+        >
+          {children}
+        </div>
+      </Dialog.Content>
+    </Dialog.Portal>
+  );
+}
+
+interface BottomSheetTitleProps extends ComponentProps<typeof Dialog.Title> {
+  icon?: LucideIcon;
+}
+
+function Title({
+  icon: Icon,
+  className,
+  children,
+  ref,
+  ...props
+}: BottomSheetTitleProps) {
+  return (
+    <Dialog.Title
+      ref={ref}
+      data-slot="bottom-sheet-title"
+      className={cn(
+        "flex items-center gap-3 text-title-medium text-[var(--content-default)]",
+        className,
+      )}
+      {...props}
+    >
+      {Icon ? (
+        <span
+          aria-hidden="true"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+          style={{
+            backgroundColor:
+              "color-mix(in oklab, var(--primary-base) 16%, transparent)",
+          }}
+        >
+          <Icon className="h-5 w-5 text-[var(--primary-base)]" />
+        </span>
+      ) : null}
+      {/* `text-title-*` set line-height: 1, so `truncate`'s `overflow: hidden`
+          shears glyph descenders (the tail of a g/p/y). `leading-snug` grows
+          the line box to contain them; single-line ellipsis still works. */}
+      <span className="min-w-0 truncate leading-snug">{children}</span>
+    </Dialog.Title>
+  );
+}
+
+function Description({
+  className,
+  children,
+  ref,
+  ...props
+}: ComponentProps<typeof Dialog.Description>) {
+  return (
+    <Dialog.Description
+      ref={ref}
+      data-slot="bottom-sheet-description"
+      className={cn(
+        "mt-1 whitespace-pre-line text-body-medium-lighter text-[var(--content-secondary)]",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </Dialog.Description>
+  );
+}
+
+function Close(props: ComponentProps<typeof Dialog.Close>) {
+  return <Dialog.Close data-slot="bottom-sheet-close" {...props} />;
+}
+
+/**
+ * The pill at the top edge that reads as "this panel came up from the bottom".
+ * Opt-in, so sheets that already open under a header or carry their own
+ * chrome are unchanged.
+ *
+ * Decorative only: it is not a drag target, and dismissal stays with the
+ * overlay, Escape, and whatever close control the header carries. Hidden from
+ * assistive technology for that reason, rather than announced as a control
+ * that does nothing.
+ */
+function Grabber({ className, ...props }: ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="bottom-sheet-grabber"
+      aria-hidden="true"
+      className={cn(
+        "mx-auto h-1 w-14 shrink-0 rounded-full bg-[var(--border-element)]",
+        className,
+      )}
+      {...props}
+    />
+  );
+}
+
+function Header({
+  className,
+  children,
+  ...props
+}: ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="bottom-sheet-header"
+      className={cn("flex flex-col gap-1", className)}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Body({
+  className,
+  children,
+  ...props
+}: ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="bottom-sheet-body"
+      className={cn(
+        "flex-1 overflow-y-auto pt-4 text-[var(--content-default)]",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Footer({
+  className,
+  children,
+  ...props
+}: ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="bottom-sheet-footer"
+      className={cn("flex justify-end gap-2 pt-4", className)}
+      {...props}
+    >
+      {children}
+    </div>
+  );
+}
+
+const BottomSheet = {
+  Root,
+  Trigger,
+  Content,
+  Title,
+  Description,
+  Close,
+  Grabber,
+  Header,
+  Body,
+  Footer,
+};
+
+export { BottomSheet };
+export type { BottomSheetContentProps, BottomSheetTitleProps };

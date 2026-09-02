@@ -1,0 +1,10 @@
+{
+  "entry": ["src/**/*.test.ts", "src/**/__tests__/**/*.ts"],
+  "project": ["src/**/*.ts"],
+  "ignoreDependencies": [
+    "@forgeai/service-contracts",
+    "@forgeai/credential-storage",
+    "@forgeai/egress-proxy",
+    "@forgeai/ipc-server-utils"
+  ]
+}

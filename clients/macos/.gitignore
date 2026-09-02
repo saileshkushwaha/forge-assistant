@@ -1,0 +1,16 @@
+node_modules/
+out/
+dist/
+build/
+resources/bun
+resources/hotkey-helper
+resources/forge-mac-helper
+resources/forge-mac-helper.app
+resources/web-dist
+native/hotkey-helper/.build/
+native/mac-helper/.build/
+resources/cli-lockfile
+resources/.forge-mac-helper.source-hash
+resources/.forge-mac-helper*.Info.plist
+resources/.forge-mac-helper.bundle-name
+resources/Forge Helper*.app

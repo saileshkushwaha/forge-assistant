@@ -1,0 +1,183 @@
+import { beforeEach, describe, expect, test } from "bun:test";
+
+import {
+  DEFAULT_PAUSE_BEFORE_REPLY_MS,
+  MAX_PAUSE_BEFORE_REPLY_MS,
+  MIN_PAUSE_BEFORE_REPLY_MS,
+  interruptSensitivityToMs,
+  useVoicePrefsStore,
+} from "@/stores/voice-prefs-store";
+
+const VOICE_PREFS_STORE_KEY = "forge:voice-prefs";
+
+beforeEach(() => {
+  localStorage.removeItem(VOICE_PREFS_STORE_KEY);
+  useVoicePrefsStore.setState({
+    showUserTranscript: false,
+    showAssistantTranscript: false,
+    firstRunSeen: false,
+    pauseBeforeReplyMs: null,
+    interruptSensitivity: null,
+    flashMode: "off",
+    showKeptFrame: true,
+  });
+});
+
+describe("useVoicePrefsStore — voice-mode preferences", () => {
+  test("defaults are all off", () => {
+    expect(useVoicePrefsStore.getState().showUserTranscript).toBe(false);
+    expect(useVoicePrefsStore.getState().showAssistantTranscript).toBe(false);
+    expect(useVoicePrefsStore.getState().firstRunSeen).toBe(false);
+  });
+
+  test("setShowUserTranscript flips only the user-transcript field", () => {
+    useVoicePrefsStore.getState().setShowUserTranscript(true);
+
+    expect(useVoicePrefsStore.getState().showUserTranscript).toBe(true);
+    expect(useVoicePrefsStore.getState().showAssistantTranscript).toBe(false);
+    expect(useVoicePrefsStore.getState().firstRunSeen).toBe(false);
+
+    useVoicePrefsStore.getState().setShowUserTranscript(false);
+    expect(useVoicePrefsStore.getState().showUserTranscript).toBe(false);
+  });
+
+  test("setShowAssistantTranscript flips only the assistant-transcript field", () => {
+    useVoicePrefsStore.getState().setShowAssistantTranscript(true);
+
+    expect(useVoicePrefsStore.getState().showAssistantTranscript).toBe(true);
+    expect(useVoicePrefsStore.getState().showUserTranscript).toBe(false);
+    expect(useVoicePrefsStore.getState().firstRunSeen).toBe(false);
+
+    useVoicePrefsStore.getState().setShowAssistantTranscript(false);
+    expect(useVoicePrefsStore.getState().showAssistantTranscript).toBe(false);
+  });
+
+  test("markFirstRunSeen sets the flag", () => {
+    useVoicePrefsStore.getState().markFirstRunSeen();
+    expect(useVoicePrefsStore.getState().firstRunSeen).toBe(true);
+  });
+
+  test("markFirstRunSeen is idempotent and does not clobber later writes", () => {
+    useVoicePrefsStore.getState().markFirstRunSeen();
+    expect(useVoicePrefsStore.getState().firstRunSeen).toBe(true);
+
+    // A subsequent unrelated write should survive a second markFirstRunSeen().
+    useVoicePrefsStore.getState().setShowUserTranscript(true);
+    useVoicePrefsStore.getState().markFirstRunSeen();
+
+    expect(useVoicePrefsStore.getState().firstRunSeen).toBe(true);
+    expect(useVoicePrefsStore.getState().showUserTranscript).toBe(true);
+  });
+
+  test("persists to the forge:voice-prefs localStorage key", () => {
+    useVoicePrefsStore.getState().setShowUserTranscript(true);
+    useVoicePrefsStore.getState().setShowAssistantTranscript(true);
+    useVoicePrefsStore.getState().markFirstRunSeen();
+    useVoicePrefsStore.getState().setPauseBeforeReplyMs(1500);
+    useVoicePrefsStore.getState().setInterruptSensitivity("low");
+    useVoicePrefsStore.getState().setFlashMode("auto");
+
+    const raw = localStorage.getItem(VOICE_PREFS_STORE_KEY);
+    expect(raw).not.toBeNull();
+
+    const persisted = JSON.parse(raw as string).state;
+    expect(persisted.showUserTranscript).toBe(true);
+    expect(persisted.showAssistantTranscript).toBe(true);
+    expect(persisted.firstRunSeen).toBe(true);
+    expect(persisted.pauseBeforeReplyMs).toBe(1500);
+    expect(persisted.interruptSensitivity).toBe("low");
+    expect(persisted.flashMode).toBe("auto");
+    expect(persisted.showKeptFrame).toBe(true);
+  });
+});
+
+describe("useVoicePrefsStore: the kept-frame thumbnail", () => {
+  test("ships on, so a call keeps Live's one visible signal until it is turned off", () => {
+    // The shipped value rather than the reset above, which is a test fixture.
+    expect(useVoicePrefsStore.getInitialState().showKeptFrame).toBe(true);
+  });
+
+  test("setShowKeptFrame flips only that field, and survives a reload", () => {
+    useVoicePrefsStore.getState().setShowKeptFrame(false);
+
+    expect(useVoicePrefsStore.getState().showKeptFrame).toBe(false);
+    expect(useVoicePrefsStore.getState().flashMode).toBe("off");
+
+    const persisted = JSON.parse(
+      localStorage.getItem(VOICE_PREFS_STORE_KEY) as string,
+    ).state;
+    expect(persisted.showKeptFrame).toBe(false);
+
+    useVoicePrefsStore.getState().setShowKeptFrame(true);
+    expect(useVoicePrefsStore.getState().showKeptFrame).toBe(true);
+  });
+});
+
+describe("useVoicePrefsStore: camera flash", () => {
+  test("rests at off, so a call never opens with a flash the user did not ask for", () => {
+    expect(useVoicePrefsStore.getState().flashMode).toBe("off");
+  });
+
+  test("setFlashMode records the choice verbatim", () => {
+    useVoicePrefsStore.getState().setFlashMode("auto");
+    expect(useVoicePrefsStore.getState().flashMode).toBe("auto");
+
+    useVoicePrefsStore.getState().setFlashMode("on");
+    expect(useVoicePrefsStore.getState().flashMode).toBe("on");
+
+    useVoicePrefsStore.getState().setFlashMode("off");
+    expect(useVoicePrefsStore.getState().flashMode).toBe("off");
+  });
+
+  test("holds the choice while a flashless camera is up", () => {
+    // The device is never allowed to write here. A phone flipped to a front
+    // camera with no flash hides the control; flipping back has to restore
+    // what the user picked, not an "off" the hardware chose for them.
+    useVoicePrefsStore.getState().setFlashMode("on");
+    useVoicePrefsStore.getState().setShowUserTranscript(true);
+
+    expect(useVoicePrefsStore.getState().flashMode).toBe("on");
+  });
+});
+
+describe("useVoicePrefsStore — turn-taking settings (JARVIS-1284)", () => {
+  test("defaults are unset (null) so the daemon config governs", () => {
+    expect(useVoicePrefsStore.getState().pauseBeforeReplyMs).toBeNull();
+    expect(useVoicePrefsStore.getState().interruptSensitivity).toBeNull();
+    // The default constant still exists for the UI's resting value.
+    expect(DEFAULT_PAUSE_BEFORE_REPLY_MS).toBe(1200);
+  });
+
+  test("setInterruptSensitivity records an explicit level", () => {
+    useVoicePrefsStore.getState().setInterruptSensitivity("high");
+    expect(useVoicePrefsStore.getState().interruptSensitivity).toBe("high");
+  });
+
+  test("interruptSensitivityToMs maps inversely (higher sensitivity → fewer ms)", () => {
+    expect(interruptSensitivityToMs("high")).toBe(100);
+    expect(interruptSensitivityToMs("medium")).toBe(250);
+    expect(interruptSensitivityToMs("low")).toBe(600);
+  });
+
+  test("setPauseBeforeReplyMs clamps to the supported range and rounds", () => {
+    const set = useVoicePrefsStore.getState().setPauseBeforeReplyMs;
+
+    set(1234.6);
+    expect(useVoicePrefsStore.getState().pauseBeforeReplyMs).toBe(1235);
+
+    set(50); // below MIN
+    expect(useVoicePrefsStore.getState().pauseBeforeReplyMs).toBe(
+      MIN_PAUSE_BEFORE_REPLY_MS,
+    );
+
+    set(99_999); // above MAX
+    expect(useVoicePrefsStore.getState().pauseBeforeReplyMs).toBe(
+      MAX_PAUSE_BEFORE_REPLY_MS,
+    );
+
+    set(Number.NaN); // guards against non-finite
+    expect(useVoicePrefsStore.getState().pauseBeforeReplyMs).toBe(
+      DEFAULT_PAUSE_BEFORE_REPLY_MS,
+    );
+  });
+});

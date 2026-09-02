@@ -1,0 +1,287 @@
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router";
+
+import {
+  AccountForm,
+  AccountHeading,
+  AccountInput,
+} from "@/components/account/account-form";
+import { useTranslation } from "@/i18n";
+import { refreshPlatformAssistantsIfStale } from "@/assistant/platform-assistants-sync";
+import { AccountShell } from "@/components/account/account-shell";
+import { SignupShell } from "@/domains/account/components/signup-shell";
+import {
+  getProviderSignup,
+  isConflict,
+  submitProviderSignup,
+} from "@/lib/auth/allauth-client";
+import {
+  resolvePostAuthDestination,
+  resolvePostLoginDestination,
+} from "@/domains/account/login-flow";
+import { useAuthStore } from "@/stores/auth-store";
+import { routes } from "@/utils/routes";
+
+/**
+ * Provider signup completion page. Shown when allauth's provider flow needs
+ * additional information before creating the account.
+ *
+ * Shows the OAuth-claim first/last name as read-only and collects an
+ * occupation. The account is completed via `submitProviderSignup` using the
+ * provider-supplied email + username (no username field — matching the standard
+ * sign-up, which does not surface one to the user). If the provider didn't
+ * supply email + username, it falls back to the editable form so the user can
+ * still complete signup.
+ */
+export function ProviderSignupPage() {
+  const { t } = useTranslation("account");
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const refreshSession = useAuthStore.use.refreshSession();
+  const returnTo = searchParams.get("returnTo");
+
+  // Provider-supplied identity. email + username are submitted to complete the
+  // account; firstName/lastName are display-only (read-only). All come from the
+  // pending provider-signup context.
+  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [occupation, setOccupation] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isLoadingContext, setIsLoadingContext] = useState(true);
+  const didLoad = useRef(false);
+
+  useEffect(() => {
+    if (didLoad.current) {
+      return;
+    }
+    didLoad.current = true;
+
+    (async () => {
+      try {
+        const result = await getProviderSignup();
+        if (!result.ok) {
+          navigate(routes.account.login, { replace: true });
+          return;
+        }
+
+        setEmail(result.data.user.email ?? "");
+        setUsername(result.data.user.username ?? "");
+        setFirstName(result.data.user.first_name ?? "");
+        setLastName(result.data.user.last_name ?? "");
+        setIsLoadingContext(false);
+      } catch {
+        navigate(routes.account.login, { replace: true });
+      }
+    })();
+  }, [navigate]);
+
+  const completeSignup = async () => {
+    const result = await submitProviderSignup({ email, username });
+
+    if (!result.ok) {
+      if (isConflict(result)) {
+        await refreshSession();
+        await refreshPlatformAssistantsIfStale();
+        const conflict = resolvePostLoginDestination(
+          returnTo,
+          routes.account.root,
+        );
+        if (conflict.requiresFullPageNavigation) {
+          window.location.href = conflict.destination;
+        } else {
+          navigate(conflict.destination);
+        }
+        return;
+      }
+
+      setError(result.errors[0]?.message ?? "Failed to complete signup.");
+      return;
+    }
+
+    await refreshSession();
+    await refreshPlatformAssistantsIfStale();
+    const post = resolvePostAuthDestination({
+      returnTo,
+      fallback: routes.account.root,
+      authIntent: "signup",
+    });
+    if (post.requiresFullPageNavigation) {
+      window.location.href = post.destination;
+    } else {
+      navigate(post.destination);
+    }
+  };
+
+  const onSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      await completeSignup();
+    } catch {
+      setError(t("authErrors.genericFailure"));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const onPersonalPageSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!occupation.trim()) {
+      return;
+    }
+    setError(null);
+    setIsSubmitting(true);
+    try {
+      // NOTE: occupation is collected but not yet persisted. Forwarding it into
+      // the onboarding handoff requires a shared cross-domain contract (the
+      // `account` domain may not import `onboarding` directly). Deferred.
+      await completeSignup();
+    } catch {
+      setError(t("authErrors.genericFailure"));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  if (isLoadingContext) {
+    return (
+      <AccountShell>
+        <AccountHeading
+          title={t("providerSignupPage.completingTitle")}
+          subtitle={t("providerSignupPage.completingSubtitle")}
+        />
+      </AccountShell>
+    );
+  }
+
+  // The branded step hides email/username and submits the provider-supplied
+  // values. If the provider didn't supply them (rare — WorkOS social always
+  // returns an email, and allauth suggests a username), fall through to the
+  // editable form so the user can complete signup rather than hit an
+  // uncorrectable validation error.
+  if (email && username) {
+    const canSubmit = occupation.trim().length > 0 && !isSubmitting;
+    return (
+      <SignupShell>
+        <form
+          onSubmit={onPersonalPageSubmit}
+          className="signup-details__thread"
+        >
+          <h2 className="signup-details__heading">
+            {t("providerSignupPage.headingLine1")}
+            <br />
+            {t("providerSignupPage.headingLine2")}
+          </h2>
+
+          {error && <p className="signup-details__error">{error}</p>}
+
+          <div className="signup-details__step">
+            <span className="signup-details__label">
+              {t("providerSignupPage.firstNameQuestion")}{" "}
+              <span className="signup-details__req">*</span>
+            </span>
+            <input
+              className="signup-details__input"
+              type="text"
+              placeholder={t("providerSignupPage.firstNamePlaceholder")}
+              value={firstName}
+              readOnly
+              disabled
+            />
+          </div>
+
+          <div className="signup-details__step">
+            <span className="signup-details__label">
+              {t("providerSignupPage.lastNameQuestion")}{" "}
+              <span className="signup-details__req">*</span>
+            </span>
+            <input
+              className="signup-details__input"
+              type="text"
+              placeholder={t("providerSignupPage.lastNamePlaceholder")}
+              value={lastName}
+              readOnly
+              disabled
+            />
+          </div>
+
+          <div className="signup-details__step">
+            <span className="signup-details__label">
+              {t("providerSignupPage.roleQuestion")}{" "}
+              <span className="signup-details__req">*</span>
+            </span>
+            <input
+              className="signup-details__input"
+              type="text"
+              autoComplete="organization-title"
+              placeholder={t("providerSignupPage.rolePlaceholder")}
+              value={occupation}
+              onChange={(e) => setOccupation(e.target.value)}
+              autoFocus
+            />
+          </div>
+
+          <div className="signup-details__step">
+            <button
+              type="submit"
+              className="signup-details__continue"
+              disabled={!canSubmit}
+            >
+              {isSubmitting
+                ? t("providerSignupPage.submitting")
+                : t("providerSignupPage.submit")}
+            </button>
+          </div>
+        </form>
+      </SignupShell>
+    );
+  }
+
+  return (
+    <AccountShell>
+      <AccountHeading
+        title={t("providerSignupPage.completeAccountTitle")}
+        subtitle={t("providerSignupPage.completeAccountSubtitle")}
+      />
+
+      <AccountForm
+        onSubmit={onSubmit}
+        error={error}
+        submitLabel={t("providerSignupPage.completeSignup")}
+        submittingLabel={t("providerSignupPage.completingSignup")}
+        isSubmitting={isSubmitting}
+        footer={
+          <Link
+            to={routes.account.login}
+            className="text-sm text-[var(--content-secondary)] hover:text-[var(--content-default)]"
+          >
+            {t("providerSignupPage.backToSignIn")}
+          </Link>
+        }
+      >
+        <AccountInput
+          id="email"
+          type="email"
+          autoComplete="email"
+          placeholder={t("providerSignupPage.emailPlaceholder")}
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          required
+        />
+        <AccountInput
+          id="username"
+          type="text"
+          autoComplete="username"
+          placeholder={t("providerSignupPage.usernamePlaceholder")}
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          required
+        />
+      </AccountForm>
+    </AccountShell>
+  );
+}

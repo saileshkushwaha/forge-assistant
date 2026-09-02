@@ -1,0 +1,34 @@
+import { BROWSER_MODE } from "./browser-mode-constants.js";
+import { DEVTOOLS_DISCOVERY_CODE } from "./cdp-client/cdp-inspect/discovery.js";
+
+export const BROWSER_STATUS_MODE = {
+  EXTENSION: BROWSER_MODE.EXTENSION,
+  CDP_INSPECT: BROWSER_MODE.CDP_INSPECT,
+  LOCAL: BROWSER_MODE.LOCAL,
+} as const;
+
+export type BrowserStatusMode =
+  (typeof BROWSER_STATUS_MODE)[keyof typeof BROWSER_STATUS_MODE];
+
+export const BROWSER_STATUS_MODES: readonly BrowserStatusMode[] = [
+  BROWSER_STATUS_MODE.EXTENSION,
+  BROWSER_STATUS_MODE.CDP_INSPECT,
+  BROWSER_STATUS_MODE.LOCAL,
+] as const;
+
+export const BROWSER_STATUS_INPUT_FIELD = {
+  CHECK_LOCAL_LAUNCH: "check_local_launch",
+} as const;
+
+/** Chrome Web Store listing for the Forge Assistant browser extension. */
+export const CHROME_WEB_STORE_INSTALL_URL =
+  "https://chromewebstore.google.com/detail/forge-assistant-browser/hphbdmpffeigpcdjkckleobjmhhokpne";
+
+/** User-facing install step for status userActions and command-failure hints. */
+export const CHROME_EXTENSION_INSTALL_HINT = `Install the Forge Assistant Chrome extension from the Chrome Web Store: ${CHROME_WEB_STORE_INSTALL_URL}`;
+
+export const CDP_INSPECT_STATUS_DISCOVERY_CODE = {
+  NO_TARGETS: DEVTOOLS_DISCOVERY_CODE.NO_TARGETS,
+  INVALID_RESPONSE: DEVTOOLS_DISCOVERY_CODE.INVALID_RESPONSE,
+  WS_FALLBACK_FAILED: DEVTOOLS_DISCOVERY_CODE.WS_FALLBACK_FAILED,
+} as const;

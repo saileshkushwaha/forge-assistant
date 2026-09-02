@@ -1,0 +1,795 @@
+# Forge Assistant — Architecture
+
+This file is the cross-system architecture index. Detailed designs live in domain docs close to code ownership.
+
+## Architecture Docs
+
+| Domain                                      | Architecture Doc                                                                                   |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| Assistant runtime                           | [`assistant/ARCHITECTURE.md`](assistant/ARCHITECTURE.md)                                           |
+| Gateway ingress/webhooks                    | [`gateway/ARCHITECTURE.md`](gateway/ARCHITECTURE.md)                                               |
+| Browser extension                            | [`clients/chrome-extension/README.md`](clients/chrome-extension/README.md)                                               |
+| Clients (web, iOS, Android, macOS, Windows)  | [`clients/README.md`](clients/README.md)                                                           |
+| Public docs site (`clients/docs`)            | [`clients/docs/README.md`](clients/docs/README.md)                                                 |
+| Assistant memory deep dive                  | [`assistant/docs/architecture/memory.md`](assistant/docs/architecture/memory.md)                   |
+| Assistant integrations deep dive            | [`assistant/docs/architecture/integrations.md`](assistant/docs/architecture/integrations.md)       |
+| Assistant scheduling deep dive              | [`assistant/docs/architecture/scheduling.md`](assistant/docs/architecture/scheduling.md)           |
+| Assistant security deep dive                | [`assistant/docs/architecture/security.md`](assistant/docs/architecture/security.md)               |
+| Trusted contact access design               | [`assistant/docs/trusted-contact-access.md`](assistant/docs/trusted-contact-access.md)             |
+| Trusted contacts operator runbook           | [`assistant/docs/runbook-trusted-contacts.md`](assistant/docs/runbook-trusted-contacts.md)         |
+| Credential Execution Service (CES)          | [`assistant/docs/credential-execution-service.md`](assistant/docs/credential-execution-service.md) |
+| Environment and data layout                 | [Environment and Data Layout](#environment-and-data-layout) (this file)                            |
+| Multi-local instance isolation              | [Multi-Local Instance Isolation](#multi-local-instance-isolation) (this file)                      |
+| Docker volume architecture                  | [Docker Volume Architecture](#docker-volume-architecture) (this file)                              |
+| Web search failure normalization            | [Web Search Failure Normalization](#web-search-failure-normalization) (this file)                  |
+| Workflow orchestration engine               | [Workflow Orchestration Engine](#workflow-orchestration-engine) (this file)                        |
+| Watch sessions                              | [Watch Sessions](#watch-sessions) (this file)                                                      |
+| Workflow authoring guide                    | [`assistant/docs/workflows.md`](assistant/docs/workflows.md)                                       |
+| Workflow manual testing runbook             | [`assistant/docs/workflows-testing.md`](assistant/docs/workflows-testing.md)                       |
+| Service communication matrix                | [`docs/service-communication-matrix.md`](docs/service-communication-matrix.md)                     |
+| Forge Doctor                               | [`assistant/docs/forge-doctor.md`](assistant/docs/forge-doctor.md)                                 |
+
+## Cross-Cutting Invariants
+
+- Public ingress is gateway-only; external webhook/API routes are implemented in `gateway/` and forwarded internally.
+- Bundled-skill outbound API calls that require credentials use the Credential Execution Service (CES) tools (`make_authenticated_request`, `run_authenticated_command`) rather than manual token plumbing or proxied shell execution. See `assistant/docs/credential-execution-service.md`.
+- Managed shared-identity channel routing runs in a separate managed-gateway service lane from the per-assistant `gateway/` lane. The deployable managed-gateway runtime is platform-owned; this repo keeps public contracts/fixtures under `gateway-managed/`.
+- Production LLM calls go through the provider abstraction, not provider SDKs in feature code.
+- The macOS and Windows Electron shells share platform-neutral window security, IPC validation, origin checks, and preload capability registration through `@forgeai/electron-desktop`, plus native helper process and JSON-RPC lifecycle through `@forgeai/native-sidecar`. Each client keeps platform lifecycle and native features in its own adapter modules under `clients/<platform>/src/`. Both preloads implement the same `ForgeBridge` contract (`packages/ipc-contract`); a surface only one shell can back is optional there and documented in [`clients/windows/docs/parity-matrix.md`](clients/windows/docs/parity-matrix.md), which `clients/windows/src/preload/bridge-parity.test.ts` enforces against the macOS preload.
+- Packaged Windows startup provisions a user-scoped CLI runtime from
+  `resources/cli-runtime`. Versioned installs and one fallback live under
+  Electron `userData`; a small channel-scoped launcher under
+  `%LOCALAPPDATA%\Forge*\bin` delegates to the selected runtime. Long-lived
+  service executables stay in the versioned runtime, and the user PATH
+  registry change is broadcast to the Windows shell. See
+  [`clients/windows/README.md`](clients/windows/README.md#packaged-cli-provisioning).
+- Notification producers emit through `emitNotificationSignal()` to preserve decisioning and audit invariants. Reminder routing metadata (`routingIntent`, `routingHints`) flows through the signal and is enforced post-decision to control multi-channel fanout. The decision engine produces per-channel conversation actions (`start_new` / `reuse_existing`) validated against a candidate set; `notification_conversation_created` is emitted only on actual creation, not on reuse.
+- Memory extraction/recall must enforce actor-role provenance gates for untrusted actors.
+- **Credential Execution Service (CES)** is a separate top-level package (`credential-executor/`) and a separate managed container image that enforces hard process-boundary isolation for credential-bearing operations. The assistant communicates with CES exclusively via RPC (stdio JSON-RPC locally, Unix socket in managed). In Docker mode, the assistant and gateway also access credential CRUD operations via the CES HTTP API (`CES_CREDENTIAL_URL`), authenticated with `CES_SERVICE_TOKEN`. CES exposes three tools (`run_authenticated_command`, `make_authenticated_request`, `manage_secure_command_tool`) as a deliberate exception to the skill-first tool direction — these require hard isolation that skills cannot provide. Shared contract types, credential-storage abstractions, egress-proxy session management, and typed service clients live in seven private packages under `packages/` — these are the only allowed shared-code path; direct source imports between `assistant/` and `credential-executor/` remain banned:
+  - `@forgeai/service-contracts` — CES wire-protocol schemas (RPC methods, handshake types, Zod validators) and shared trust-rule types. Consumed via explicit domain subpaths: `@forgeai/service-contracts/credential-rpc`, `@forgeai/service-contracts/trust-rules`, `@forgeai/service-contracts/handles`, `@forgeai/service-contracts/grants`, `@forgeai/service-contracts/rpc`, `@forgeai/service-contracts/rendering`, `@forgeai/service-contracts/error`.
+  - `@forgeai/credential-storage` — Credential-storage abstractions shared by assistant and CES.
+  - `@forgeai/egress-proxy` — Egress-proxy session management for CES secure commands.
+  - `@forgeai/gateway-client` — Typed HTTP client for assistant-to-gateway calls (trust API, feature flags, log export, deliver).
+  - `@forgeai/assistant-client` — Typed HTTP client for gateway-to-assistant calls (runtime proxy, export).
+  - `@forgeai/ces-client` — Typed HTTP and RPC client for assistant/gateway-to-CES calls (credential CRUD, log export, RPC handshake/envelope). Sub-module exports: `@forgeai/ces-client/http-credentials`, `@forgeai/ces-client/http-log-export`, `@forgeai/ces-client/rpc-client`.
+
+  Secure commands are manifest-driven: each bundle declares an auth adapter (`env_var`, `temp_file`, or `credential_process`), an egress mode (`proxy_required` or `no_network`), and allowed argv patterns; generic HTTP clients, interpreters, and shell trampolines are structurally denied as entrypoints. CES-owned durable state (grants and audit logs) is never read or written by the assistant directly. Credential key files (`keys.enc`, `store.key`) are stored on the CES security volume (`/ces-security`) in Docker mode — no other container has access to this volume. `host_bash` is outside the strong CES secrecy guarantee. Response/output filtering (header stripping, body clamping, secret scrubbing) is defense-in-depth, not the primary protection. Managed rollout requires a third runtime image alongside the assistant and gateway images, with corresponding `vembda` pod-template changes; rollout is gated by five feature flags (`ces-tools`, `ces-shell-lockdown`, `ces-secure-install`, `ces-grant-audit`, `ces-managed-sidecar`; keys are simple kebab-case, e.g. `ces-tools`), all defaulting to off. See [`assistant/docs/credential-execution-service.md`](assistant/docs/credential-execution-service.md).
+
+- Trusted contact ingress ACL is channel-agnostic; identity binding adapts per channel (chat ID, E.164 phone, external user ID) without channel-specific branching.
+- macOS managed sign-in connects the desktop app to a platform-hosted assistant via Django assistant-scoped proxy endpoints (`/v1/assistants/{id}/...`). The `HTTPDaemonClient` operates in `platformAssistantProxy` route mode with `X-Session-Token` auth. Managed lockfile entries have `cloud: "forge"`. Startup guardrails skip local daemon hatching and actor credential bootstrap.
+- The macOS host-proxy bridge connects to local loopback assistants and Forge-managed assistants. Paired lockfile entries retain their desktop data-plane routing, but the app does not open `/v1/events` or result-posting connections that expose the Mac's host tools to paired assistants.
+- **Assistant feature flags** control skill availability at runtime. The canonical key format is simple kebab-case (e.g., `browser`, `ces-tools`); the legacy `feature_flags.<id>.enabled` and `skills.<id>.enabled` formats are no longer supported. All declared flags live in the unified registry at `meta/feature-flags/feature-flag-registry.json`, scoped by `scope` (`assistant` or `client`). Labels come from the registry. Bundled copies exist at `assistant/src/config/feature-flag-registry.json` and `gateway/src/feature-flag-registry.json`. The gateway owns the `/v1/feature-flags` REST API and the IPC `get_feature_flags` method (see [`gateway/ARCHITECTURE.md`](gateway/ARCHITECTURE.md)); the assistant resolves effective flag state via IPC to the gateway socket (`gateway.sock`) — see [`assistant/ARCHITECTURE.md`](assistant/ARCHITECTURE.md). When a flag is OFF, the corresponding skill is excluded from all exposure surfaces: client skill lists, system prompt catalog, `skill_load`, runtime tool projection, and included child skills. Guard tests enforce that all flag keys in code use the canonical format and that all referenced flags are declared in the unified registry.
+- **Safe storage limits** protect the workspace volume. When workspace disk usage reaches the critical 95% threshold, the assistant enters storage cleanup mode: background work is skipped, remote ingress including trusted-contact messages is blocked, local guardian turns get cleanup-specific runtime instructions, and clients must show acknowledgement/status UI until enough space is freed or the guardian explicitly overrides the lock. See [Safe Storage Limits](#safe-storage-limits).
+- **Permission controls v2** removes deterministic tool-by-tool approval friction for assistant-owned actions. Under `permission-controls-v2`, the only built-in deterministic approval surface is conversation-scoped host computer access for `host_*` / host-target tools. All other assistant-owned tool usage relies on model-mediated consent, not temporary approvals, wildcard scopes, per-tool persistence, or network/side-effect approval cards. Cross-principal identity checks (for example unknown actors) still fail closed deterministically.
+- **Workflow orchestration**: the assistant authors JS/TS scripts that run in a QuickJS-WASM sandbox and fan out to parallel ephemeral leaf agents. Scripts get **hooks only** — no filesystem, network, process, or ambient capabilities — because a script may be authored after the assistant has read untrusted content. The per-run **capability declaration is the single consent point** (no per-call approval prompts inside a run), and the only runaway guard is the per-run **agent cap** (`maxAgentsPerRun`, default 500) — there is no dollar kill-switch by design. Scripts must be deterministic (no `Date.now`/`Math.random`/argless `new Date()`) so a journaled run can resume after a restart by replaying the unchanged call prefix. See [Workflow Orchestration Engine](#workflow-orchestration-engine) and [`assistant/docs/workflows.md`](assistant/docs/workflows.md).
+- **Context overflow resilience**: The session loop implements a deterministic overflow convergence pipeline that recovers from context-too-large failures without surfacing errors to users. A preflight budget check catches overflow before provider calls; a tiered reducer (forced compaction, tool-result truncation, media stubbing, injection downgrade) iteratively shrinks the payload; and when all tiers are exhausted the overflow policy resolver auto-compresses the latest turn with no user prompt — this applies equally to interactive and non-interactive sessions. Setting `contextWindow.overflowRecovery.interactiveLatestTurnCompression` to `"drop"` opts interactive sessions out, and `contextWindow.overflowRecovery.nonInteractiveLatestTurnCompression: "drop"` opts non-interactive/background sessions out independently — either short-circuits to a graceful failure for that session type; setting `contextWindow.overflowRecovery.enabled: false` also yields a graceful failure. Config lives under `contextWindow.overflowRecovery`. See [`assistant/ARCHITECTURE.md`](assistant/ARCHITECTURE.md#context-overflow-recovery) for the full design and [`assistant/docs/architecture/memory.md`](assistant/docs/architecture/memory.md#context-compaction-and-overflow-recovery-interaction) for compaction interaction details.
+- **Embedding-dimension reconciliation**: The embedding dimension is a committed property of the Qdrant collection, derived from the backend that built it. At daemon startup `reconcileEmbeddingIdentity` probes the configured backend and reconciles the committed dimension confirm-before-destroy: backend down → defer (recall degrades to empty results, surfaced via `memory_worker_status`'s `embedding.degraded`); no committed dimension → commit the probed dimension and create the collections; match → no-op; mismatch with an explicit provider → migrate (recreate, the only destructive path, gated on a successful probe); mismatch under `auto` → no-op (no thrash on transient backend availability). Platform intent is a fill-only deployment default (`IS_PLATFORM` → `provider: "gemini"`, in-memory, not persisted) — there is no on-disk provider/dimension migration. See [`assistant/docs/architecture/memory.md`](assistant/docs/architecture/memory.md#embedding-dimension-reconciliation).
+
+## Environment and Data Layout
+
+Environments are **namespaces**, not containers. `FORGE_ENVIRONMENT` selects a path prefix (`forge` for `production`, `forge-<env>` for the non-production seeds `dev`, `staging`, `test`, `local`). It does not own data. Data directories are always per-assistant, and the lockfile's `resources.instanceDir` field is the source of truth for any given assistant's on-disk location.
+
+### Per-assistant data directories
+
+Every local assistant's daemon root is `<resources.instanceDir>/.forge/`. The CLI passes per-instance paths to spawned daemons and gateways via explicit environment variables: `FORGE_WORKSPACE_DIR` (workspace data), `GATEWAY_SECURITY_DIR` (gateway security state), and `CREDENTIAL_SECURITY_DIR` (CES key stores). `assistant/src/util/platform.ts:forgeRoot` resolves the root from `FORGE_WORKSPACE_DIR` when set, falling back to `join(homedir(), ".forge")`. All root-level state (PID file, `.env`, `runtime-port`, `protected/` with its encrypted keys, trust rules, credentials, capability token, etc.) and the workspace directory derive from these helpers.
+
+Allocation of `instanceDir` for new hatches:
+
+| Environment                     | `instanceDir` path                               |
+| ------------------------------- | ------------------------------------------------ |
+| `production`                    | `$XDG_DATA_HOME/forge/assistants/<name>/`       |
+| non-production (`forge-<env>`) | `$XDG_DATA_HOME/forge-<env>/assistants/<name>/` |
+
+There is no "first local" special case — every new hatch goes through the same allocator (`cli/src/lib/assistant-config.ts:allocateLocalResources`) and lands under the XDG multi-instance tree. `~/.forge/` is never an allocation target; it is only reached via existing lockfile entries whose `instanceDir = homedir()` was recorded before this change.
+
+### Lockfile
+
+| Environment    | Canonical path                                | Read fallback                             |
+| -------------- | --------------------------------------------- | ----------------------------------------- |
+| `production`   | `~/.forge.lock.json`                         | `~/.forge.lockfile.json` (legacy rename) |
+| non-production | `$XDG_CONFIG_HOME/forge-<env>/lockfile.json` | (none — new path)                         |
+
+The CLI routes all lockfile reads/writes through `cli/src/lib/environments/paths.ts:getLockfilePath` / `getLockfilePaths` so non-production environments land in the env-scoped XDG config tree. The parent directory is created on first write.
+
+### Config directory (XDG-shared auth state)
+
+| Environment    | Config dir                       |
+| -------------- | -------------------------------- |
+| `production`   | `$XDG_CONFIG_HOME/forge/`       |
+| non-production | `$XDG_CONFIG_HOME/forge-<env>/` |
+
+Platform tokens (`platform-token`), device IDs (`device-id`), and guardian tokens (`assistants/<id>/guardian-token.json`) live under the env-scoped config dir. The CLI (`cli/src/lib/platform-client.ts`, `cli/src/lib/guardian-token.ts`), the daemon (`assistant/src/util/platform.ts:getXdgPlatformTokenPath`, `getXdgForgeConfigDirName`), and the Electron app (`clients/macos/src/main/device-id.ts`) all agree on the same env-scoped path, so `forge login`, guardian leasing, persisted device IDs, and desktop session state never bleed between environments.
+
+Paired guardian credentials stay in the trusted host. The renderer sends paired traffic to `/assistant/__gateway-paired/<assistantId>/*` without a bearer. The Electron main process, CLI web host, or Vite development host resolves the paired entry, removes any renderer-provided `Authorization` header, reads or refreshes the guardian token, and injects it only on the remote gateway hop. Renderer-facing guardian-token endpoints reject paired assistant IDs. Packaged Electron gates the custom-protocol route through main-process `WebRequest` frame identity because Chromium omits Origin, Referer, and Fetch Metadata from the `GlobalRequest` delivered to custom protocol handlers.
+
+### Device pairing
+
+Connecting a second machine, a phone, or a tablet to a self-hosted assistant runs on one secret: the device code of a challenge minted on the assistant's gateway. Which side mints the challenge sets the direction. The host mints and approves in one step and hands over a pairing link carrying the code, or the joining device mints for itself and shows a short approval code for the host to approve afterward. Every QR code in the flow renders one of those two, never a credential of its own. The user-facing walkthrough is [`docs/self-hosted-phone.md`](docs/self-hosted-phone.md).
+
+**The pairing link** is the forward direction. `forge pair` and the desktop **Settings → General → Pair a device** card both mint a remote-web challenge on the assistant's own gateway over loopback and approve it on the spot, because running either one on the host machine _is_ the proof of local presence. `buildRemoteWebPairingUrl` composes the result as `<publicBaseUrl>/assistant/pair#device_code=<code>`, carrying the code in the fragment so it never reaches the wire. By default the QR code is that same link rendered as pixels: scanning it, opening it in a browser, and pasting it into `forge connect import` are three ways to spend one link. `forge pair --app` changes what the QR encodes, not what pairing does: `buildAppConnectUrl` composes `<scheme>://connect?url=<base>&code=<device code>` (default scheme `forge-assistant`) so a scan opens the native app on that same device code, and the command prints the app link plus the https link for a device without the app.
+
+**The approval code** is the reverse direction, for starting at the joining device and getting to the host afterward. Handed a bare `https://host` address instead of a link, the importing device mints its own challenge, displays the short `ABCD-EFGH` user code, and polls. The host approves it with `forge pair --web-approve <code>` or from the pending-requests list on the Pair a device card. `POST /v1/remote-web/pairing-verification` and the three `/v1/remote-web/pairing-requests` routes are loopback-gated, so approving means being on the host.
+
+`resolvePublicBaseUrl` (`packages/service-contracts/src/remote-web-pairing.ts`) is the validator every surface ends up in, and so the place to change what pairing accepts. It normalizes an address to its base, collapsing a pasted pair-page URL back to the host it names, and refuses loopback, private-network IP literals, plain http, and tunnel-vendor websites. `forge pair` and the Pair a device card call it directly on the URL they are about to advertise. The importing flow calls `parsePairingAddress`, which wraps it and adds the device code read off the link, so one pasted value can be either a pairing link or a bare address. Hosts POST to whatever address they are handed, so those refusals are the SSRF containment for the whole flow.
+
+The exchange runs in the trusted host, never the renderer. `pairingStart` / `pairingPoll` / `pairingCancel` (`packages/local-mode/src/pair.ts`) hold the device code, the client-generated device id, and the challenge TTL in an in-memory map keyed by an opaque handle, handing callers only `{ handle, userCode, expiresAt, intervalSeconds }`. The opaque handle is what keeps the device code off whatever IPC or loopback boundary a host exposes a session over. `forge connect import` (`cli/src/commands/connect/import.ts`) drives them in-process; the Electron main process exposes them over IPC as `forge:localMode:pairing*` (`packages/electron-desktop/src/local-mode.ts`), and the CLI web host (`cli/src/commands/client.ts`) and the Vite development host (`clients/web/vite-plugin-local-mode.ts`) each mirror the same three as loopback `__local/pairing-*` routes, so the renderer never sees more than the handle.
+
+`POST /v1/remote-web/pairing-token` branches on `deviceId`. A browser omits it and receives its refresh token as an `HttpOnly` cookie scoped to the refresh path. A host that sends one receives a device-bound, per-device revocable credential whose `refreshToken` comes back in the response body with no `Set-Cookie`, which is what lets a lockfile writer persist it; the `platform` it declares (`cli`, `desktop`, `ios`, or `android`) is what the host's paired-devices list renders. The response branches on that same device-bound decision, never on whether a cookie path was computed, so a browser exchange cannot quietly start serializing its refresh token into the body if the cookie-path helper ever changes. A gateway predating the branch ignores the unknown field and returns no body refresh token, so the pairing registers access-only and warns that it will expire.
+
+The `deviceId` branch is a considered trade-off rather than a free one. It grants no new _scope_: an approved device code already buys a full guardian-scoped session either way. What it changes is how durable and how exfiltratable the credential is. Before it, the strongest thing a party holding an approved code could read out of the response was the 30-day access token, because the refresh credential was reachable only as an `HttpOnly; Secure; SameSite=Strict` cookie that page script cannot read. With it, that same party can add any `deviceId` and read a rotating refresh token good for up to 365 days, or 90 days idle, straight out of the body. That lands on the pair page specifically, because the device code rides in the URL fragment where script on the assistant's remote-web origin can read it: an XSS or a hostile extension there can mint its own device-bound pair instead of being confined to the cookie path.
+
+Four compensating controls bound it, and each is load-bearing. The device code is single-use and expires in ten minutes, so a stolen exchange spends the code and the real device's exchange then fails, which surfaces the theft. `rotateCredentials` compares the caller's `hashedDeviceId` against the record's and refuses a mismatch, so a refresh token exfiltrated on its own is not redeemable without the matching raw `deviceId`. Both paths record an actor-token row, so both are revocable from the loopback-gated Paired devices list, and the device-bound row is the one carrying a stable client id and a declared `platform` (`cli`, `desktop`, `ios`, or `android`), so the host can tell which machine it is revoking. The route also accepts a `clientReportedName` and the list renders one when the row has it, but no client populates it on this route (`pairingPoll` posts `{ deviceCode, deviceId, platform }`); the rows that carry a name come from `POST /v1/guardian/init`. And the SPA sends only `deviceCode` (`clients/web/src/lib/auth/remote-gateway-session.ts`), so the browser posture is byte-identical to what it was before the branch existed.
+
+### Backwards compatibility
+
+Backwards compatibility lives entirely in the read path — no on-disk migration is performed.
+
+- Existing production lockfile entries with `instanceDir = homedir()` continue to work: the daemon receives `FORGE_WORKSPACE_DIR = homedir()/.forge/workspace` and resolves to `~/.forge/` exactly as before.
+- Production writes still go to the legacy `~/.forge.lock.json` filename; the rename-era `~/.forge.lockfile.json` is accepted as a read fallback.
+- Unknown values of `FORGE_ENVIRONMENT` (anything outside the seed table) resolve to `forge` rather than a fabricated `forge-<garbage>` directory, so misconfiguration degrades gracefully to the production path.
+
+### Mixed local/remote and targeting
+
+The lockfile can contain both local and remote entries side-by-side. Remote entries (`cloud: "gcp"`, `"aws"`, `"forge"`, `"custom"`) carry connection metadata (`runtimeUrl`, `bearerToken`, etc.) but no `resources` block. `wake` and `sleep` only operate on local entries. `retire` works on both and dispatches per-cloud teardown for remote entries. CLI commands resolve which instance to target via `resolveTargetAssistant()` in the order: explicit name argument → `activeAssistant` field (set by `forge use`) → sole local assistant.
+
+## Multi-Local Instance Isolation
+
+Multiple local assistant instances can run side-by-side on the same machine, each fully isolated. This enables development, testing, or running multiple assistants concurrently without conflicts.
+
+### Instance directory layout
+
+Each named instance gets its own directory tree. The exact location depends on environment and whether the lockfile entry predates the env-aware allocator (see [Environment and Data Layout](#environment-and-data-layout) for allocation rules). For a production install of two new assistants `alice` and `bob`:
+
+```
+~/.forge.lock.json                                       # Global lockfile
+~/.local/share/forge/assistants/
+├── alice/                                                # instanceDir for alice
+│   └── .forge/                                          # Daemon root (forgeRoot())
+│       ├── forge.pid                                    # Daemon PID (duplicated by the CLI on spawn)
+│       ├── gateway.pid
+│       ├── ngrok.pid
+│       ├── runtime-port
+│       ├── .env
+│       ├── protected/                                    # keys.enc, trust.json, credentials/, ...
+│       └── workspace/
+│           ├── config.json
+│           ├── data/
+│           │   ├── db/assistant.db
+│           │   ├── qdrant/
+│           │   └── logs/
+│           └── skills/
+└── bob/
+    └── .forge/
+        └── ...                                           # Same structure as alice
+```
+
+An existing production lockfile entry created before env-aware allocation may still have `instanceDir = ~` and all of its state under `~/.forge/`. That path is preserved via the lockfile read path — no data is moved. Non-production (`forge-<env>`) hatches use the same layout under `$XDG_DATA_HOME/forge-<env>/assistants/<name>/`.
+
+All instances are created with explicit names via `forge hatch --name <name>`.
+
+### Isolation model
+
+Each instance gets its own:
+
+- **`FORGE_WORKSPACE_DIR`**: Set to `<instanceDir>/.forge/workspace`. The daemon resolves all workspace state (DB, logs, memory indices) relative to this directory.
+- **`GATEWAY_SECURITY_DIR`** / **`CREDENTIAL_SECURITY_DIR`**: Set to `<instanceDir>/.forge/protected`. The gateway and credential-executor resolve their security state (keys, trust rules, credentials) relative to these directories.
+- **Daemon port** (`RUNTIME_HTTP_PORT`), **Gateway port** (`GATEWAY_PORT`), **Qdrant port** (`QDRANT_HTTP_PORT`): Allocated by scanning upward from the environment's base port — see "Port allocation" below.
+- **PID file**: `<instanceDir>/.forge/forge.pid`
+- **SQLite database, logs, memory indices**: All under `<instanceDir>/.forge/workspace/data/`
+
+### Port allocation
+
+`allocateLocalResources()` in `cli/src/lib/assistant-config.ts` takes each service's base port from `getDefaultPorts(env)` and scans upward for the first port not bound by another local instance in that env's lockfile. Each environment has its own disjoint port window so running prod + non-prod assistants side by side doesn't collide; the concrete numbers live in `packages/environments/src/seeds.ts`. Allocated ports are persisted in the lockfile `resources` field so `wake`/`sleep` restart instances on the same ports.
+
+### Lockfile schema
+
+The production lockfile (`~/.forge.lock.json`) tracks all instances:
+
+```jsonc
+{
+  "assistants": [
+    {
+      "assistantId": "alice",
+      "runtimeUrl": "http://localhost:7821",
+      "cloud": "local",
+      "hatchedAt": "2026-03-04T...",
+      "resources": {                    // Present for local entries
+        "instanceDir": "~/.local/share/forge/assistants/alice",
+        "daemonPort": 7821,
+        "gatewayPort": 7830,
+        "qdrantPort": 6333,
+        "pidFile": "~/.local/share/forge/assistants/alice/.forge/forge.pid"
+      }
+    },
+    {
+      "assistantId": "bob",
+      "runtimeUrl": "http://localhost:7822",
+      "cloud": "local",
+      "resources": { ... }
+    }
+  ],
+  "activeAssistant": "alice"           // Set by `forge use <name>`
+}
+```
+
+- `resources` (`LocalInstanceResources`): Present on all local entries. Contains per-instance ports and paths.
+- `activeAssistant`: Determines which instance CLI commands target by default.
+- Remote assistants (`cloud: "gcp"`, `"aws"`, `"forge"`, etc.) are unaffected and have no `resources` field.
+- Non-production environments use `$XDG_CONFIG_HOME/forge-<env>/lockfile.json` with the same schema.
+
+## Docker Volume Architecture
+
+Docker instances use dedicated volumes with per-service access boundaries instead of a single shared data volume. This enforces least-privilege: each service only has filesystem access to the data it owns. The assistant container also owns a dedicated `dockerd-data` volume that backs the inner Docker engine used by the Meet subsystem — see [Meet Docker-in-Docker Model](#meet-docker-in-docker-model) below.
+
+### Volume Layout
+
+```
+<instance-name>-workspace       →  /workspace           (assistant: rw, gateway: rw, CES: ro)
+<instance-name>-gateway-sec     →  /gateway-security    (gateway only)
+<instance-name>-ces-sec         →  /ces-security        (CES only)
+<instance-name>-socket          →  /run/ces-bootstrap   (assistant + CES)
+<instance-name>-gateway-ipc     →  /run/gateway-ipc     (assistant + gateway)
+<instance-name>-assistant-ipc   →  /run/assistant-ipc   (assistant + gateway)
+<instance-name>-dockerd-data    →  /var/lib/docker      (assistant only — inner dockerd state)
+```
+
+- **Workspace volume** (`/workspace`): Shared state — config, conversations, apps, skills, database, logs. Set via `FORGE_WORKSPACE_DIR=/workspace`. The assistant and gateway have read-write access; the CES mounts it read-only (for config reading).
+- **Gateway security volume** (`/gateway-security`): Files private to the gateway container. Only the gateway container mounts this volume. Set via `GATEWAY_SECURITY_DIR=/gateway-security`.
+- **CES security volume** (`/ces-security`): Credential encryption keys (`keys.enc`, `store.key`). Only the CES container mounts this volume. Set via `CREDENTIAL_SECURITY_DIR=/ces-security`.
+- **Socket volume** (`/run/ces-bootstrap`): CES bootstrap socket for initial service handshake between the assistant and CES containers.
+- **Gateway IPC volume** (`/run/gateway-ipc`): Contains `gateway.sock` — the Unix domain socket used for assistant→gateway IPC calls (feature flags, trust rules, credentials). Set via `GATEWAY_IPC_SOCKET_DIR=/run/gateway-ipc`.
+- **Assistant IPC volume** (`/run/assistant-ipc`): Contains `assistant.sock` — the Unix domain socket used for gateway→assistant reverse IPC calls. Set via `ASSISTANT_IPC_SOCKET_DIR=/run/assistant-ipc`.
+- **Inner dockerd data volume** (`/var/lib/docker`): Persistent storage for the `dockerd` that runs _inside_ the assistant container. Holds the pulled meet-bot image and any in-flight bot container state so image pulls don't repeat on every assistant restart. Only the assistant container mounts this volume.
+
+### Meet Docker-in-Docker Model
+
+In Docker mode, Meet bots are **nested** containers spawned by a `dockerd` running _inside_ the assistant container. The assistant container runs an init supervisor that starts both the daemon and a local `dockerd`; the Meet subsystem connects to that inner engine and spawns bot containers as children of the assistant container.
+
+```
+  host Docker Engine
+        |
+        +--- assistant ct. (privileged)
+        |       |
+        |       +--- (inner) dockerd
+        |       |        |
+        |       |        +--- meet-bot ct. (per meeting)
+        |       |        +--- meet-bot ct. (per meeting)
+        |       |
+        |       +--- /workspace (<name>-workspace)
+        |
+        +--- gateway ct.
+        +--- CES ct.
+```
+
+Each bot container receives a bind of `/workspace` sourced from the assistant's own `/workspace` mount, so the bot can drop transcripts, audio, and metadata into `/workspace/meets/<meetingId>/` where the assistant can read them back. Bots have no access to the gateway-security or CES-security volumes.
+
+**Bot lifecycle is coupled to the assistant container.** Because the inner `dockerd` process runs inside the assistant container, if that container dies the inner engine dies with it and every bot container is torn down automatically. There are no orphan bot containers on the host — `docker ps` on the host only ever lists the assistant/gateway/CES containers.
+
+**Bare-metal fallback.** When the assistant runs directly on the host (bare-metal / local-dev mode) there is no inner `dockerd`; the daemon connects to the host's Docker engine and spawns bot containers as _siblings_ of the assistant process. In that configuration host-level `docker ps` does see each bot, and an ungraceful assistant exit can leave orphan bot containers — the meet-bot image's built-in max-meeting-minutes timeout caps their lifetime.
+
+**Security boundary — single-user local only.** The Docker-in-Docker model requires the assistant container to run with `--privileged`, or at minimum `CAP_SYS_ADMIN` + `CAP_NET_ADMIN`, so the inner `dockerd` can set up cgroups, overlay mounts, and container networks. This is acceptable for single-user local deployments where the assistant already runs with the user's privileges. It is **not** acceptable as-is for managed/multi-tenant mode: Kubernetes deployments must configure Pod Security Admission to allow this privilege level on the assistant pod, or swap in a different bot-spawn model (e.g. a Kubernetes job runner or a dedicated bot-scheduler service) before Meet can ship to managed instances. Managed Meet support is explicitly out of scope for this Docker-in-Docker approach — see [`forge-assistant-platform`](../forge-assistant-platform).
+
+### Cross-Service Access Patterns
+
+For the full inventory of every assistant/gateway/CES communication direction, protocol, and callsite, see the [Service Communication Matrix](docs/service-communication-matrix.md).
+
+In Docker mode (`IS_CONTAINERIZED=true`), services that need data from another service's security domain use HTTP APIs instead of direct filesystem access:
+
+- **Trust rules**: The assistant reads/writes trust rules via the gateway's HTTP trust API. The gateway owns the filesystem copy at `/gateway-security/trust.json`.
+- **Credentials**: The assistant and gateway access credential CRUD via the CES HTTP API (`CES_CREDENTIAL_URL`), authenticated with `CES_SERVICE_TOKEN`. The CES owns the encryption keys at `/ces-security/`.
+- **Contacts (auth/authz)**: The gateway owns `contacts` and `contact_channels` tables in its SQLite database (`/gateway-security/gateway.sqlite`). These tables store contact authentication and authorization data — who can talk to the assistant and what their channel policies are. The assistant daemon reads contact auth/authz data via IPC (`get_contact`, `list_contacts`, `get_contact_by_channel`, `get_channels_for_contact`). The assistant retains ownership of contact **context** (conversation history, memory associations, display preferences) in its own database. This separation is in progress — the gateway tables are declared and IPC handlers are wired, but endpoint cutover and data migration are not yet complete.
+
+### Signing Key Bootstrap Protocol
+
+In Docker mode, the gateway and daemon must share the same actor-token signing key so both can mint and verify JWTs. The gateway owns the key and the daemon fetches it at startup:
+
+1. **Gateway startup**: The gateway generates the signing key (or loads it from `/gateway-security/actor-token-signing-key`) and registers the `GET /internal/signing-key-bootstrap` endpoint.
+2. **Daemon startup**: The daemon calls `resolveSigningKey()`, which detects Docker mode (`IS_CONTAINERIZED=true` + `GATEWAY_INTERNAL_URL` set) and calls `fetchSigningKeyFromGateway()`. This fetches the key from the gateway's bootstrap endpoint (retrying up to 30 times with 1s intervals to tolerate gateway startup delays).
+3. **Lockfile guard**: After the first successful response, the gateway writes a lockfile (`signing-key-bootstrap.lock`) to prevent re-serving the key. Subsequent requests return 403.
+4. **Local persistence**: The daemon persists the fetched key to its local filesystem (`protected/actor-token-signing-key`).
+5. **Daemon restart**: On restart, the gateway returns 403 (lockfile present). The daemon catches `BootstrapAlreadyCompleted` and loads the key from its local disk copy.
+6. **Docker upgrade**: The CLI's `hatch` command deletes the gateway lockfile before starting containers, allowing the bootstrap to repeat with a fresh daemon container.
+
+In local mode (non-Docker), `resolveSigningKey()` delegates to `loadOrCreateSigningKey()`, which loads an existing key from disk or generates a new one — no network calls involved.
+
+## System Overview
+
+```mermaid
+graph TB
+    subgraph "macOS Menu Bar App (Swift)"
+        subgraph "AppServices (singleton container)"
+            DC_SWIFT["DaemonClient"]
+            SURFACE_MGR["SurfaceManager<br/>route by display field"]
+            ZOOM["ZoomManager<br/>(@Observable)"]
+            SETTINGS_STORE["SettingsStore<br/>shared settings state"]
+        end
+
+        UI["UI Layer<br/>NSStatusItem + Popover<br/>SessionOverlay / ThinkingIndicator<br/>Onboarding / Settings"]
+        TI["TaskInputView<br/>Text + Voice + Attachments"]
+        CLS["Classifier<br/>Haiku direct call<br/>+ heuristic fallback"]
+
+        subgraph "Computer Use Session"
+            PERCEIVE["PERCEIVE<br/>AX Tree + Screenshot<br/>(parallel capture)"]
+            VERIFY["VERIFY<br/>ActionVerifier<br/>safety checks"]
+            EXECUTE["EXECUTE<br/>ActionExecutor<br/>CGEvent injection"]
+            WAIT["WAIT<br/>Adaptive UI settle<br/>AX tree polling"]
+        end
+
+subgraph "Text Q&A Session"
+            TEXT_SESS["TextSession<br/>streaming deltas"]
+            TEXT_WIN["TextResponseWindow"]
+        end
+
+        subgraph "Main Window"
+            MW_STATE["MainWindowState<br/>cross-view UI state"]
+            CONV_MGR["ConversationManager<br/>conversation CRUD + delegate"]
+            CONV_RESTORER["ConversationRestorer<br/>daemon conversation restoration"]
+            CHAT_VM["ChatViewModel<br/>conversation bootstrap + streaming"]
+            CHAT_VIEW["ChatView<br/>bubbles + composer + stop"]
+        end
+
+        subgraph "Dynamic Workspace"
+            WORKSPACE["WorkspaceView<br/>toolbar + WKWebView + composer + optional docked chat"]
+            DYN_PAGE["DynamicPageSurfaceView<br/>WKWebView + widget injection"]
+        end
+
+        VOICE["VoiceInputManager<br/>Fn hold → SFSpeechRecognizer"]
+        ATTACH["Attachment System<br/>images, PDFs, text<br/>drag/drop, paste, picker"]
+        PERM["PermissionManager (macOS)<br/>Accessibility, Screen Recording,<br/>Microphone"]
+    end
+
+    subgraph "Daemon (Bun + TypeScript)"
+        HTTP_RT["RuntimeHttpServer<br/>HTTP + SSE"]
+        HANDLERS["Route Handlers<br/>conversation routing"]
+        SESSION_MGR["Conversation Manager<br/>in-memory pool<br/>stale eviction"]
+        CHANNEL_TX["Channel Transport<br/>messaging/providers<br/>direct Web API delivery"]
+
+        subgraph "Onboarding Control Plane"
+            PLAYBOOK_MGR["OnboardingPlaybookManager<br/>resolve + reconcile channel playbooks"]
+            PLAYBOOK_REG["onboarding/playbooks/registry.json<br/>started-channel index"]
+            ONBOARD_ORCH["OnboardingOrchestrator<br/>post-hatch sequence<br/>runtime onboarding-mode prompt"]
+        end
+
+        subgraph "Inference"
+            ANTHROPIC["Anthropic Claude<br/>primary provider"]
+            OPENAI["OpenAI<br/>secondary provider"]
+            GEMINI["Google Gemini<br/>secondary provider"]
+            OLLAMA["Ollama<br/>local models"]
+        end
+
+        subgraph "Memory System"
+            CONV_STORE["ConversationStore<br/>Drizzle ORM CRUD"]
+            INDEXER["Memory Indexer<br/>segment + extract"]
+            RECALL["Memory Recall<br/>Hybrid Search (dense + sparse RRF)<br/>Tier Classification + Staleness<br/>Scope Filtering + Two-Layer Injection"]
+            JOBS_WORKER["MemoryJobsWorker<br/>poll every 1.5s<br/>embed, extract, cleanup_stale"]
+        end
+
+        subgraph "SQLite Database ($FORGE_WORKSPACE_DIR/data/db/assistant.db)"
+            DB_CONV["conversations"]
+            DB_MSG["messages"]
+            DB_TOOL["tool_invocations"]
+            DB_ITEMS["memory_items"]
+            DB_SRC["memory_item_sources"]
+            DB_JOBS["memory_jobs"]
+            DB_ATTACH["attachments"]
+            DB_CHAN["channel_inbound_events"]
+            DB_KEYS["conversation_keys"]
+            DB_REMINDERS["reminders<br/>(routing_intent, routing_hints_json)"]
+            DB_SCHED_JOBS["cron_jobs (recurrence schedules)"]
+            DB_SCHED_RUNS["cron_runs (schedule execution history)"]
+            DB_TASKS["tasks"]
+            DB_TASK_RUNS["task_runs"]
+            DB_CONTACTS["contacts<br/>(migrating to gateway)"]
+        end
+
+        subgraph "SQLite Database ($FORGE_WORKSPACE_DIR/data/db/assistant-memory.db)"
+            DB_SEG["memory_segments"]
+            DB_SUM["memory_summaries"]
+            DB_EMB["memory_embeddings"]
+        end
+
+        subgraph "Skill Tool System"
+            SKILL_CATALOG["Skill Catalog<br/>bundled + managed + workspace + extra"]
+            SKILL_MANIFEST["SKILL.md + TOOLS.json<br/>per-skill directory"]
+            SKILL_PROJECTION["projectSkillTools()<br/>session-level projection"]
+            SKILL_DERIVE["deriveActiveSkills()<br/>scan &lt;loaded_skill&gt; markers"]
+            SKILL_FACTORY["SkillToolFactory<br/>manifest → Tool objects"]
+            SKILL_HOST_RUNNER["Host Script Runner<br/>in-process import + run()"]
+            SKILL_SANDBOX_RUNNER["Sandbox Script Runner<br/>isolated subprocess"]
+        end
+
+        subgraph "Integrations"
+            INT_REGISTRY["IntegrationRegistry<br/>in-memory definitions"]
+            INT_OAUTH["OAuth2 PKCE Flow<br/>gateway callback transport"]
+            INT_TOKEN["TokenManager<br/>auto-refresh + retry"]
+            GMAIL_CLIENT["GmailClient<br/>REST API wrapper"]
+            GMAIL_TOOLS["Gmail Tools<br/>(bundled skill: gmail)"]
+        end
+
+        subgraph "Script Proxy"
+            PROXY_SESSION["SessionManager<br/>per-conversation proxy sessions"]
+            PROXY_SERVER["ProxyServer<br/>HTTP forward + CONNECT"]
+            PROXY_ROUTER["Router<br/>MITM vs tunnel decision"]
+            PROXY_POLICY["PolicyEngine<br/>credential template matching"]
+            PROXY_MITM["MITM Handler<br/>TLS termination + rewrite"]
+            PROXY_CERTS["Cert Manager<br/>local CA + leaf certs"]
+            PROXY_APPROVAL["ApprovalCallback<br/>→ PermissionPrompter"]
+        end
+
+        subgraph "Conversation Disk View"
+            DISK_VIEW["conversation-disk-view.ts<br/>init, sync, remove, flatten"]
+        end
+
+    end
+
+    subgraph "Gateway (Bun + TypeScript)"
+        GW_WEBHOOK["Telegram Webhook<br/>/webhooks/telegram"]
+        GW_VERIFY["Verify Secret<br/>x-telegram-bot-api-secret-token"]
+        GW_NORMALIZE["Normalize Message<br/>DM text only (v1)"]
+        GW_ROUTE["Route Resolver<br/>conversation_id → actor_id → default"]
+        GW_FORWARD["Runtime Client<br/>POST /channels/inbound"]
+        GW_TWILIO_VOICE["Twilio Voice Webhook<br/>/webhooks/twilio/voice"]
+        GW_TWILIO_STATUS["Twilio Status Webhook<br/>/webhooks/twilio/status"]
+        GW_TWILIO_MEDIA["Twilio Media Stream WS<br/>/webhooks/twilio/media-stream/:callSessionId/:token<br/>(bidirectional proxy)"]
+        GW_WA_WEBHOOK["WhatsApp Webhook<br/>/webhooks/whatsapp<br/>(HMAC-SHA256 validated)"]
+        GW_SLACK_SOCKET["Slack Socket Mode<br/>WebSocket via<br/>apps.connections.open"]
+        GW_SLACK_NORMALIZE["Slack Normalize<br/>app_mention events<br/>+ bot-mention stripping"]
+        GW_OAUTH["OAuth Callback<br/>/webhooks/oauth/callback"]
+        GW_PROXY["Runtime Proxy<br/>(optional, bearer auth)"]
+        GW_FEATURE_FLAGS["Feature Flags API<br/>GET /v1/feature-flags<br/>PATCH /v1/feature-flags/:key"]
+        GW_PROBES["/healthz + /readyz<br/>k8s liveness/readiness"]
+    end
+
+    subgraph "External Channel APIs"
+        EXT_TELEGRAM["Telegram Bot API"]
+        EXT_WHATSAPP["WhatsApp Cloud API<br/>(Meta)"]
+        EXT_SLACK["Slack Web API"]
+    end
+
+    subgraph "Web Server (Next.js + React)"
+        WEB_UI["Web Dashboard<br/>React 19"]
+        WEB_API["API Routes"]
+
+        subgraph "PostgreSQL (Drizzle ORM)"
+            PG_ASST["assistants"]
+            PG_CHAN["assistant_channel_accounts"]
+            PG_CONTACT["assistant_channel_contacts"]
+            PG_USER["user / session / account"]
+            PG_TOKENS["assistant tokens (OAuth)"]
+            PG_APIKEYS["api_keys"]
+        end
+
+        RUNTIME_CLIENT["RuntimeClient<br/>HTTP proxy"]
+    end
+
+    subgraph "macOS Local Storage"
+        ENC_STORE["Encrypted Store<br/>(local: ~/.forge/protected/keys.enc<br/>Docker: /ces-security/keys.enc)"]
+        USERDEFAULTS["UserDefaults<br/>preferences / state"]
+        APP_SUPPORT["~/Library/App Support/<br/>forge-assistant/"]
+        APPS_DATA["$FORGE_WORKSPACE_DIR/data/apps/<br/>app JSON + pages"]
+        SESSION_LOGS["logs/session-*.json"]
+    end
+
+    %% User input flows
+    TI -->|"task_submit<br/>(source='text')"| CLS
+    VOICE -->|"task_submit<br/>(source='voice')"| TEXT_SESS
+    ATTACH -->|"validated files"| TI
+    CLS -->|"computerUse"| PERCEIVE
+    CLS -->|"textQA"| TEXT_SESS
+
+    %% Text Q&A → CU via HostCuProxy
+    TEXT_SESS -.->|"computer_use_* actions<br/>forwarded via HostCuProxy"| PERCEIVE
+
+    %% Computer Use loop
+    PERCEIVE -->|"CuObservationMessage<br/>(HTTP POST)"| HTTP_RT
+    HTTP_RT -->|"CuActionMessage<br/>(SSE)"| VERIFY
+    VERIFY -->|"allowed"| EXECUTE
+    VERIFY -->|"needsConfirmation"| UI
+    UI -->|"approved"| EXECUTE
+    VERIFY -->|"blocked"| PERCEIVE
+    EXECUTE --> WAIT
+    WAIT --> PERCEIVE
+
+    %% Text Q&A flow
+    TEXT_SESS -->|"SessionCreate +<br/>UserMessage<br/>(HTTP POST)"| HTTP_RT
+    HTTP_RT -->|"AssistantTextDelta<br/>(SSE stream)"| TEXT_WIN
+
+    %% Main Window Chat flow
+    CHAT_VM -->|"conversation_create +<br/>user_message +<br/>cancel<br/>(HTTP POST)"| HTTP_RT
+    HTTP_RT -->|"conversation_title_updated +<br/>text deltas +<br/>message_complete +<br/>conversation_error +<br/>message_queued +<br/>message_dequeued +<br/>generation_handoff<br/>(SSE)"| CHAT_VM
+    CHAT_VIEW --> CHAT_VM
+    MW_STATE -->|"app_open_request<br/>(dashboard-first bootstrap)"| HTTP_RT
+
+    %% Dynamic Workspace flow
+    HTTP_RT -->|"ui_surface_show"| SURFACE_MGR
+    SURFACE_MGR -->|"display != inline<br/>.openDynamicWorkspace"| WORKSPACE
+    WORKSPACE --> DYN_PAGE
+    DYN_PAGE -->|"forgeBridge<br/>actions + data RPC<br/>(HTTP)"| HTTP_RT
+
+    %% Daemon internals
+    HTTP_RT --> HANDLERS
+    HANDLERS --> SESSION_MGR
+    SESSION_MGR --> ANTHROPIC
+    SESSION_MGR --> OPENAI
+    SESSION_MGR --> GEMINI
+    SESSION_MGR --> OLLAMA
+    SESSION_MGR --> CONV_STORE
+    SESSION_MGR --> RECALL
+    HANDLERS -->|"conversation_create.transport"| PLAYBOOK_MGR
+    PLAYBOOK_MGR --> PLAYBOOK_REG
+    PLAYBOOK_MGR -->|"inject <channel_onboarding_playbook><br/>runtime context"| SESSION_MGR
+    PLAYBOOK_MGR --> ONBOARD_ORCH
+    ONBOARD_ORCH -->|"inject <onboarding_mode><br/>runtime context"| SESSION_MGR
+    CONV_STORE --> DB_CONV
+    CONV_STORE --> DB_MSG
+    CONV_STORE --> DB_TOOL
+    CONV_STORE --> DB_ATTACH
+    INDEXER --> DB_SEG
+    INDEXER --> DB_ITEMS
+    INDEXER --> DB_SRC
+    INDEXER --> DB_JOBS
+    JOBS_WORKER --> DB_JOBS
+    JOBS_WORKER --> DB_EMB
+    JOBS_WORKER --> DB_SUM
+    RECALL --> DB_EMB
+
+    %% Gateway flow — Telegram path
+    GW_WEBHOOK --> GW_VERIFY
+    GW_VERIFY --> GW_NORMALIZE
+    GW_NORMALIZE --> GW_ROUTE
+    GW_ROUTE --> GW_FORWARD
+    GW_FORWARD -->|"HTTP + replyCallbackUrl"| HTTP_RT
+    HTTP_RT -->|"channels/inbound transport<br/>channelId + hints + uxBrief"| PLAYBOOK_MGR
+
+    %% Channel outbound — direct Web API delivery (per-assistant lane)
+    %% The gateway builds replyCallbackUrl as <gatewayInternalBaseUrl>/deliver/<channel>,
+    %% but isDirectDelivery() short-circuits it: the daemon calls each provider's Web API
+    %% itself via messaging/providers and never POSTs the reply back to the gateway.
+    HTTP_RT --> CHANNEL_TX
+    CHANNEL_TX -->|"sendMessage / sendRichMessage<br/>+ attachments"| EXT_TELEGRAM
+
+    %% Gateway flow — Twilio voice webhooks
+    GW_TWILIO_VOICE -->|"HTTP"| HTTP_RT
+    GW_TWILIO_STATUS -->|"HTTP"| HTTP_RT
+    GW_TWILIO_MEDIA -->|"WebSocket proxy"| HTTP_RT
+
+    %% Gateway flow — WhatsApp channel (Meta Cloud API)
+    GW_WA_WEBHOOK -->|"HMAC-SHA256 verify<br/>+ normalize + dedup<br/>+ route resolver"| GW_FORWARD
+    CHANNEL_TX -->|"Meta Cloud API<br/>/{phoneNumberId}/messages"| EXT_WHATSAPP
+
+    %% Gateway flow — Slack channel (Socket Mode WebSocket)
+    GW_SLACK_SOCKET -->|"app_mention events<br/>ACK + dedup"| GW_SLACK_NORMALIZE
+    GW_SLACK_NORMALIZE -->|"normalize + route resolver"| GW_FORWARD
+    CHANNEL_TX -->|"startStream / appendStream / stopStream<br/>postMessage / update"| EXT_SLACK
+
+    %% Gateway flow — OAuth callback
+    GW_OAUTH -->|"forward code + state"| HTTP_RT
+
+    %% Gateway flow — Runtime proxy path (optional)
+    GW_PROXY -->|"HTTP (forwarded)"| HTTP_RT
+
+    %% Web server
+    WEB_API -->|"HTTP"| RUNTIME_CLIENT
+    RUNTIME_CLIENT -->|"HTTP"| HTTP_RT
+
+    %% Integration data flow
+    HANDLERS -->|"integration_connect"| INT_REGISTRY
+    INT_REGISTRY --> INT_OAUTH
+    INT_OAUTH -->|"open_url<br/>(SSE event)"| UI
+    INT_OAUTH -->|"store tokens"| ENC_STORE
+    GMAIL_TOOLS --> INT_TOKEN
+    INT_TOKEN -->|"auto-refresh"| ENC_STORE
+    INT_TOKEN --> GMAIL_CLIENT
+
+    %% Skill tool data flow
+    SESSION_MGR -->|"per-turn resolveTools"| SKILL_PROJECTION
+    SKILL_PROJECTION --> SKILL_DERIVE
+    SKILL_DERIVE -->|"&lt;loaded_skill id=...&gt;<br/>markers in history"| SKILL_CATALOG
+    SKILL_PROJECTION --> SKILL_CATALOG
+    SKILL_CATALOG --> SKILL_MANIFEST
+    SKILL_MANIFEST --> SKILL_FACTORY
+    SKILL_FACTORY -->|"register/unregister"| HANDLERS
+    SKILL_FACTORY -->|"host tools"| SKILL_HOST_RUNNER
+    SKILL_FACTORY -->|"sandbox tools"| SKILL_SANDBOX_RUNNER
+
+    %% CES data flow
+    SESSION_MGR -->|"CES RPC<br/>(stdio/socket)"| CES_PROCESS
+    CES_PROCESS -->|"credential<br/>materialization"| CES_GRANTS
+
+    %% Conversation disk view data flow
+    CONV_STORE -->|"init / update / remove"| DISK_VIEW
+    SESSION_MGR -->|"syncMessageToDisk"| DISK_VIEW
+
+    %% Local storage
+    APP_SUPPORT --- SESSION_LOGS
+
+    classDef swift fill:#f9a825,stroke:#f57f17,color:#000
+    classDef daemon fill:#42a5f5,stroke:#1565c0,color:#000
+    classDef db fill:#66bb6a,stroke:#2e7d32,color:#000
+    classDef web fill:#ab47bc,stroke:#6a1b9a,color:#fff
+    classDef storage fill:#78909c,stroke:#37474f,color:#fff
+    classDef provider fill:#ef5350,stroke:#c62828,color:#fff
+```
+
+## Assistant Feature Flags
+
+All feature flags (assistant-scoped and client-scoped) are declared in the unified registry at `meta/feature-flags/feature-flag-registry.json`. Each entry has `id`, `scope`, `key`, `label`, `description`, and `defaultEnabled`. Flags are scoped: `assistant` flags gate daemon behavior via the gateway API, while `client` flags control client-side UI behavior stored in UserDefaults.
+
+**Separation of concerns:**
+
+| Flag Type                                      | Scope                           | Storage                                   | Managed By                                                                                 |
+| ---------------------------------------------- | ------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Assistant feature flags (`scope: "assistant"`) | Gateway-managed, protected file | `GATEWAY_SECURITY_DIR/feature-flags.json` | Gateway `get_feature_flags` IPC (assistant) + `/v1/feature-flags` REST API (macOS clients) |
+| Client feature flags (`scope: "client"`)       | Local-only, per-device          | UserDefaults (plist)                      | macOS app directly                                                                         |
+
+**Unified registry:** The canonical source is `meta/feature-flags/feature-flag-registry.json`. Bundled copies are maintained at `assistant/src/config/feature-flag-registry.json` and `gateway/src/feature-flag-registry.json`. Labels come from the registry. Declared flags use their `defaultEnabled` value when no override is present. Flags not declared in the registry default to disabled (fail closed).
+
+**Canonical key format:** Simple kebab-case (e.g., `browser`, `contacts`). The legacy `feature_flags.<id>.enabled` and `skills.<id>.enabled` formats are no longer supported.
+
+**Resolution priority:** When determining whether an assistant flag is enabled, the resolver checks (highest priority first):
+
+1. `~/.forge/protected/feature-flags.json` overrides (local) or gateway IPC socket (Docker)
+2. Remote platform feature-flag snapshot, when a value is explicitly present
+3. Defaults registry `defaultEnabled`
+4. `false` (unknown flags fail closed)
+
+**Domain docs:**
+
+- Assistant-side resolver and enforcement points: [`assistant/ARCHITECTURE.md`](assistant/ARCHITECTURE.md)
+- Gateway defaults loader and REST API: [`gateway/ARCHITECTURE.md`](gateway/ARCHITECTURE.md)
+
+## Safe Storage Limits
+
+Safe storage limits protect the workspace volume from running out of disk. This repo owns the assistant runtime contract, macOS client UI, and release notes.
+
+`assistant/src/daemon/disk-pressure-guard.ts` samples workspace disk usage every 60 seconds using the shared disk-usage sampler. At or above 95% usage it creates an in-memory lock with a `lockId`, usage snapshot, `acknowledged` state, optional `overrideActive` state, and blocked capabilities: `agent-turns`, `background-work`, and `remote-ingress`. Dropping below the threshold clears the lock.
+
+Clients use `GET /v1/disk-pressure/status`, `POST /v1/disk-pressure/acknowledge`, and `POST /v1/disk-pressure/override` to render and transition the lock. Acknowledgement lets the guardian proceed with local cleanup while protections remain active. Override requires the exact confirmation phrase `I understand the risks` and resumes normal assistant behavior while disk usage is still critical. The assistant emits `disk_pressure_status_changed` SSE events whenever the status changes so open clients can update without polling.
+
+Runtime enforcement is layered. `disk-pressure-policy.ts` classifies turns before the agent loop runs: local guardian/owner turns enter cleanup mode; background turns, direct wakes, non-main call sites, unknown remote actors, non-guardian actors, and trusted contacts are blocked while effectively locked. Heartbeats, scheduled tasks, filing, retry sweeps, and background tool completions call the shared background gate and skip work under the same lock. Cleanup-mode turns receive a concise `<disk_pressure_warning>` runtime injection that warns first, directs the assistant to load the `system-storage-cleanup` skill with normal `skill_load` behavior, and notes that background processes and trusted-contact messages are blocked. The bundled skill carries the detailed cleanup procedure and deletion safety rules.
+
+Tool access is also narrowed during cleanup mode. The runtime marks cleanup turns in the tool context, `tool-approval-handler.ts` rejects non-cleanup-safe tools, and terminal background modes for `bash` and `host_bash` are rejected. `skill_load` stays available so the assistant can load the `system-storage-cleanup` skill, but under the lock it performs no side effects (no catalog auto-install, no inline-command execution), so loading cannot write to the workspace or run shell; `skill_execute` and skill-origin tools remain unavailable. When a new lock is created, already registered background terminal tools are cancelled with the disk-pressure reason.
+
+The macOS app owns the local client contract through `DiskPressureStatusStore`. On app activation and SSE changes, it fetches or applies the latest status. If acknowledgement is required, the main window and pop-out thread windows show a blocking safe-storage banner; the guardian must acknowledge or dismiss before continuing. After acknowledgement, chat surfaces keep a persistent cleanup status banner explaining that background processes and trusted-contact messages remain blocked until storage is freed. Acknowledgement request failures are shown in the banner so the modal does not fail silently.
+
+## Resource Pressure Monitoring
+
+Resource pressure monitoring warns platform users when their assistant is under sustained CPU or memory pressure so they can upgrade their plan. Unlike the disk-pressure guard it never blocks work: the guard is observe-and-report only.
+
+The daemon-side guard (platform gating, sampling cadence, hysteresis windows and thresholds, SSE change fingerprinting) is documented in the "Resource Pressure Monitoring" section of [`assistant/ARCHITECTURE.md`](assistant/ARCHITECTURE.md). What clients see is a read-only contract: `GET /v1/resource-pressure/status` (no acknowledge or override transitions) plus `resource_pressure_status_changed` SSE events on substantive transitions.
+
+The web app owns the client contract. `useResourcePressureMonitor` (enabled only for platform-hosted assistants) polls the status route every 60 seconds, refetches on app resume, and applies SSE updates immediately. While the state is `elevated`, chat surfaces show a warning banner (a plan-headroom nudge with no CPU/memory figures) and an Upgrade CTA that navigates to the plans page; the CTA is hidden on native Android and for non-active assistants. Dismissing the banner starts a per-assistant 7-day cooldown stored in localStorage, and checking "Don't show again" suppresses it permanently. The disk-pressure banner takes precedence: the resource slot yields whenever the disk-pressure slot is active, so a critical storage warning never competes with an upsell.
+
+## Web Search Failure Normalization
+
+<!-- ATL-727: centralized web_search backend-failure normalization. -->
+
+Every `web_search` failure path funnels through a single classification layer so the same recoverable, user-facing copy reaches all clients while raw provider detail stays in telemetry only. The classifier lives in `assistant/src/tools/network/web-search-error.ts` (`classifyWebSearchFailure`), a pure leaf module with no daemon/agent/client imports.
+
+- **Single user-facing message.** Genuine backend failures (provider `unavailable` / `internal_error` / `overloaded_error`, post-retry `429`, app-side 5xx, thrown network/timeout/DNS-on-search errors) map to one constant, `WEB_SEARCH_BACKEND_FAILURE_MESSAGE`. It propagates to every client via `WebSearchMetadata.errorMessage` and is written identically by the native Anthropic `server_tool_complete` handler in `assistant/src/daemon/conversation-agent-loop-handlers.ts` and by the app-side `backendFailureResult` helper in `assistant/src/tools/network/web-search.ts`. The copy reads as guidance (retry / continue without search / paste details) and never blames the user, claims the whole internet is down, or embeds raw provider data.
+- **Raw detail logged, not shown.** The originating status code / error code / provider body is preserved only in the structured `web_search_backend_failure` warning (`logWebSearchBackendFailure`, field `rawDetail`, truncated, query text never logged — only `queryLength`). This telemetry is gated on `classification.isBackendFailure`, so recoverable non-backend categories (`query_too_long`, `max_uses_exceeded`, config/auth, `invalid_input`) keep their own specific copy and never count as provider outages.
+- **Per-turn dedup.** A burst of backend failures in one turn surfaces at most one full friendly notice; the native handler tracks this via `webSearchBackendFailureNotified` keyed by request id (the first failure sets `fallbackShown: true`, later ones get a terse line). Every failure is still logged.
+- **Honest, recoverable continuation.** A backend failure is a normal `tool_result` (`isError: true`, empty results), not a thrown provider error — the agent loop continues, and the search is never silently marked successful. A successful empty search (zero results) stays a success: no `errorMessage`, no telemetry.
+- **No conflation with `web_fetch`.** The normalization layer keys exclusively on `web_search` (native server-tool web_search and the app-side search tool). It never inspects `WebFetchMetadata`, so a `web_fetch` DNS failure (e.g. an unresolved host) keeps its own `webFetch.errorMessage` and is never rewritten to the search backend copy.
+
+End-to-end coverage lives in `assistant/src/__tests__/web-search-backend-failure.test.ts`.
+
+## Workflow Orchestration Engine
+
+The workflow engine lets the assistant author a short JS/TS script that runs in a sandbox and fans work out across many parallel, ephemeral **leaf agents** — for example: score every option in a list in parallel, then synthesize the winner. It lives under `assistant/src/workflows/`. The launching tools (`run_workflow`, `manage_workflows`) are not always-on: they are served by the `workflows` bundled skill at `assistant/src/config/bundled-skills/workflows/`, loaded with `skill_load` and invoked via `skill_execute`. The authoring guide and a manual e2e runbook are at [`assistant/docs/workflows.md`](assistant/docs/workflows.md) and [`assistant/docs/workflows-testing.md`](assistant/docs/workflows-testing.md).
+
+### Modules
+
+- **`run-manager.ts`** (`WorkflowRunManager`) — the lifecycle surface the tool, scheduler, and routes drive. Gates on the feature flag and the concurrent-run cap, resolves the capability manifest, creates the journal run row, launches `executeWorkflow` **without awaiting it** (returns the `runId` immediately), and republishes engine progress/completion as `workflow_progress` / `workflow_completed` events. On completion it wakes the originating conversation with a human-readable summary via the same `wakeAgentForOpportunity` path scheduled tasks and background shell jobs use.
+- **`engine.ts`** (`executeWorkflow`) — runs the script in the sandbox and owns the host API (`agent`, `leaf`, `parallel`, `map`, `pipeline`, `phase`, `log`, `usage`, `workflow`, `args`), the deterministic `seq` assignment, the agent cap, and journaled resume. `map`/`pipeline` are JS-prelude helpers over the `parallel` host function (the single-threaded VM cannot re-enter itself mid-call); `pipeline` has a per-stage barrier.
+- **`sandbox.ts`** (`createWorkflowSandbox`) — a fresh QuickJS-WASM VM per run with **no** `fetch`/`process`/`Bun`/`require`/network/filesystem and a banned `Date.now`/`Math.random`/argless `new Date()`. Host functions are *asyncified*: a host call suspends the whole VM until its promise settles, so from the script's view host calls are **synchronous** (authors write `const r = agent(...)`, never `await`). An interrupt handler enforces a CPU deadline and cooperative abort.
+- **`capabilities.ts`** (`resolveCapabilities`) — resolves the per-run manifest into the concrete allow-set: a read-only baseline (`file_read`, `file_list`, `recall`, `web_search`) unioned with declared `tools`, with a forbidden set always denied. `web_fetch` is **not** in the baseline (its URL can exfiltrate read data), so a run that fetches must declare it. This is the single consent point; the leaf runner hard-denies anything outside it. Declaring any side-effecting tool/host function arms the **threshold-aware launch approval** (`isFullAccessThreshold` in `permissions/threshold.ts`): full-access posture bypasses the prompt, normal posture prompts once. The same gate guards resume of a side-effecting run (re-prompt conversationally, 403 over the HTTP route in normal posture).
+- **`leaf-runner.ts`** (`runLeaf`) — the single-leaf primitive. A *schema* leaf makes one forced-`tool_choice` provider call returning structured output (no tools); a *tool* leaf runs a restricted agent loop. Leaves are anonymous by default (minimal task prompt, no identity, no memory); `persona: true` injects the assistant identity + memory pipeline. No leaf ever creates a conversation row, jsonl mirror, title job, or turn broadcast. Every leaf call resolves through the `workflowLeaf` call site (cost-optimized profile by default).
+- **`journal-store.ts`** — typed persistence over the `workflow_runs` and `workflow_journal` tables (migration 284). The journal is an append-only `(run_id, seq)` log; on resume the engine replays cached results for the unchanged call prefix instead of re-spawning agents.
+- **`library.ts`** — saved workflows at `<workspace>/workflows/*.workflow.ts`, resolvable by name (by `meta.name`, then filename base) for `run_workflow({ name })`, `workflow(name)`, and the scheduler's `workflow` mode.
+
+A `workflow`-mode schedule carries a **persisted capability manifest** (`capabilities_json` on `cron_jobs`, migration 290), consented to once at `schedule_create` (which validates it and arms the threshold-aware approval at creation if it grants side effects). Both firing paths — the scheduler's auto-fire and the run-now `POST /v1/schedules/:id/run` route — execute under the stored manifest; a legacy/null manifest falls back to the read-only baseline.
+
+### Data flow
+
+```mermaid
+graph TB
+    TOOL["run_workflow / manage_workflows<br/>(workflows skill · skill_execute)"]
+    SCHED["Scheduler<br/>(workflow mode · stored manifest)"]
+    GATE["Threshold-aware consent<br/>side-effecting manifest:<br/>full-access bypass / else prompt"]
+    RM["WorkflowRunManager<br/>flag + run-cap gate<br/>async launch"]
+    CAPS["resolveCapabilities<br/>baseline ∪ declared − forbidden"]
+    ENGINE["executeWorkflow<br/>host API + seq + agent cap"]
+    SANDBOX["QuickJS-WASM sandbox<br/>synchronous host calls<br/>no fs/net/process"]
+    LEAVES["Leaf agents (parallel)<br/>schema | tool · anon | persona"]
+    JOURNAL["workflow_runs +<br/>workflow_journal<br/>(journaled resume)"]
+    USAGE["llm_usage_events<br/>call_site = workflowLeaf"]
+    HUB["assistant event hub<br/>workflow_progress / _completed"]
+    WAKE["Conversation wake<br/>completion summary"]
+    ROUTES["GET /v1/workflows*<br/>+ forge workflows CLI"]
+
+    TOOL --> GATE
+    SCHED --> RM
+    GATE --> RM
+    RM --> CAPS
+    CAPS --> ENGINE
+    RM --> ENGINE
+    ENGINE --> SANDBOX
+    SANDBOX -->|"agent / parallel / map / pipeline"| LEAVES
+    LEAVES -->|"results back into the VM"| SANDBOX
+    ENGINE --> JOURNAL
+    LEAVES --> USAGE
+    ENGINE -->|"phase / log"| HUB
+    RM --> HUB
+    RM --> WAKE
+    JOURNAL --> ROUTES
+```
+
+### Tables, routes, and CLI
+
+- **Tables** (migration 284): `workflow_runs` (one row per run — status, agent/token counts, script source/hash, capabilities, originating conversation) and `workflow_journal` (append-only `(run_id, seq)` leaf-call log). Scheduled workflows persist their manifest in `cron_jobs.capabilities_json` (migration 290). Leaf cost is attributed in `llm_usage_events` under `call_site = 'workflowLeaf'`.
+- **Routes** (read/abort/resume surfaces): `GET /v1/workflows`, `GET /v1/workflows/runs`, `GET /v1/workflows/runs/:id`, `POST /v1/workflows/runs/:id/abort`, `POST /v1/workflows/runs/:id/resume` (the resume route refuses a side-effecting run in normal posture and proceeds at full access).
+- **CLI**: `forge workflows list | runs | show <id> | abort <id> | resume <id>`.
+- **Config** (`workflows.*`): `maxAgentsPerRun` (500), `maxConcurrentLeaves` (6), `maxConcurrentRuns` (3), `journalRetentionDays` (30).
+
+## Watch Sessions
+
+A watch session records what the user narrates while they work and reads their screen around it. The microphone and the socket live in the browser (`clients/web/src/domains/chat/watch/watch-controller.ts`); the cadence, the observations, and the timeline live in the daemon (`assistant/src/watch/watch-session-manager.ts`). The client draws nothing during a session: frames going the other way are lifecycle only, and the retrospective is a conversational turn after the socket is gone.
+
+One session at a time, on both sides. The client holds a single module-level slot and the daemon a single manager slot, because both are driven by the one microphone the machine has. The client refuses a start while a live-voice call is running, refuses one against an assistant that predates the route (`clients/web/src/lib/backwards-compat/watch-sessions.ts`), binds the session to the assistant it was started for, and ends it when that assistant stops being the active one, when the layout unmounts, or on sign-out.
+
+**Transport.** The browser opens `wss://<ingress>/v1/watch/stream?token=<edge JWT>&mimeType=audio/pcm&sampleRate=16000` and streams 16 kHz mono PCM16LE as binary frames, the same capture pipeline live voice and streaming dictation use. The token rides the query string because browser WebSockets cannot set an `Authorization` header.
+
+Which ingress it dials depends on the deployment, chosen by `resolveWatchStreamWsUrl` the way `resolveLiveVoiceWsUrl` chooses for live voice. A self-hosted assistant is dialled straight at the user's own gateway with the actor edge JWT. A managed one has no ingress of its own, so the browser mints a short-lived velay token and dials velay, which validates it, consumes it, and injects the authenticated caller downstream; `/v1/watch/stream` is in the gateway's velay allowlist for that reason. A paired assistant is the one deployment with no transport at all: its proxy is HTTP-only and there is no loopback to fall back to, so the client refuses the start.
+
+**A socket is not a session.** The gateway accepts the downstream upgrade before it dials the runtime, so a local `open` proves only that a proxy answered. The runtime's `ready` frame (carrying `sessionId` and `conversationId`) is the first word that a session exists, and it is what starts both the microphone and the `watching` flag the companion draws its capture indicator from. Until then the session is pending and the surface shows nothing. A bounded wait covers a gateway that accepts and then never hears from the runtime; a close, an `error`, or that timeout before `ready` is a failed start rather than a stopped session, so it tears down and the flag never moves.
+
+**Auth posture.** The gateway (`gateway/src/http/routes/watch-stream-websocket.ts`) validates the edge JWT, rejects a revoked actor token, and requires an actor principal, refusing service tokens on this client-facing path. It then **pins the upgrade to the bound guardian**, as live voice does and for a sharper reason: the daemon resolves whose screen to observe from the guardian binding rather than from the request, and the proxy replaces the caller's identity with a service token upstream, so a non-guardian actor admitted here would open a session bound to the guardian and observing the guardian's screen with the daemon unable to tell. Both arrival paths are pinned (`gateway/src/http/routes/guardian-pin.ts`, shared with live voice): a velay-attested managed caller is cross-checked against the stored `platform_user_id`, and an actor edge JWT against the guardian binding. It then dials a *fresh* upstream socket to the daemon bearing only a short-lived gateway service token, never anything the client supplied, and pumps frames between the two. The daemon resolves the acting principal from its own guardian binding, restricts the upgrade to private-network peers and origins, and picks the host client to observe from that actor's own `host_cu` clients. The token gate and the frame pump are shared with `/v1/stt/stream` (`gateway/src/http/routes/runtime-audio-stream.ts`) so the two client-facing audio proxies cannot drift apart on who may open one. The guardian pin is deliberately not part of that shared gate: dictation is the user's own words going to a transcriber and back, is not a guardian-only surface, and keeps accepting any valid actor.
+
+**The retrospective.** The session records and says nothing; the retrospective is where the assistant speaks. The socket's teardown hands `WatchSessionManager.stop()`'s summary to `runWatchRetro` (`assistant/src/watch/watch-retro.ts`), which renders the timeline, asks the model for the task, the trigger phrase in the user's own words, the ordered steps, and the open questions, and directs it into the bundled `skill-management` flow. It reports and asks: it never scaffolds a skill, because the trigger phrase is not recoverable from watching someone work and `skill-management`'s first step is the alignment pass that confirms all four points with the user. A session that recorded nothing runs no retrospective.
+
+**The timeline reaches the model without becoming conversation content.** The retro dispatches through `wakeAgentForOpportunity` rather than as a user message, with `suppressWakeSurface` set. A wake's hint is ephemeral: it is never persisted and never broadcast. Its default "Conversation Woke" card would undo that by carrying the whole hint as its body, prepending it to the first assistant message, and persisting it when the tail flushes, so suppressing the card is what keeps a session's screen dump out of the transcript, out of memory, and out of search. What survives the turn is the assistant's own report, which is what the user confirms and corrects. The prompt fences the render in `<watch-timeline>`, escapes that tag inside it (`escapeTagBoundaries`, which matches on the tag name so `</watch-timeline >` and other near-misses are neutralized too), and wraps the whole recording in `wrapUntrustedContent` at the renderer's own byte budget. The two defenses stack: the escaping keeps screen content from closing the fence and landing beside the user-role instructions, and `<external_content>` is the one element the system prompt assigns never-follow semantics to, so text a page put on screen is data rather than a competing instruction.
+
+**Surfacing.** The session's conversation is created `background`, so a recording in progress does not sit in the sidebar with nothing in it. The retro sets `surfaced_at` once the turn has left visible assistant text behind, which promotes the row into the Recents grouping while leaving `conversation_type` alone. Invocation alone is not enough: a wake counts a `tool_use` block as output, so a run that loads a skill and then stops has produced no report, and provider-error rows do not count either. A retro that fails leaves the conversation where the session left it rather than as an empty thread.
+
+**Shutdown.** `RuntimeHttpServer.stop()` refuses new watch sessions, tears down the open ones, then waits on retrospectives already running (`closeWatchIngress`, then `destroy()`, then `drainWatchRetros`, bounded at 5s). Teardown during shutdown starts no retrospective: a turn begun there would be killed partway through, and the timeline it would have read outlives the daemon.
+
+```mermaid
+graph LR
+    SURFACE["Companion surface<br/>(Watch press)"]
+    MAIN["Electron main<br/>forge:companion:toggleWatch"]
+    CTRL["watch-controller.ts<br/>one slot · version gate<br/>assistant binding"]
+    MIC["LiveVoiceAudioCapture<br/>16 kHz mono PCM16LE"]
+    GW["Gateway /v1/watch/stream<br/>edge JWT + actor principal<br/>pinned to the bound guardian"]
+    RT["Daemon /v1/watch/stream<br/>private peer + service token"]
+    MGR["WatchSessionManager<br/>narration cadence"]
+    OBS["observeHostScreen<br/>host_cu · same actor"]
+    TL["watch timeline<br/>(no-turn messages)"]
+    MIRROR["use-companion-mirror<br/>publishes watching"]
+    RETRO["runWatchRetro<br/>on teardown · one turn"]
+    WAKE["agent-wake<br/>ephemeral hint<br/>suppressWakeSurface"]
+    CONV["Session conversation<br/>surfaced once a report lands"]
+
+    SURFACE --> MAIN
+    MAIN -->|"toggleWatch command"| CTRL
+    CTRL --> MIC
+    MIC -->|"binary audio frames"| GW
+    CTRL -->|"WS upgrade"| GW
+    GW -->|"fresh upstream WS<br/>service token only"| RT
+    RT --> MGR
+    MGR -->|"speech finals"| TL
+    MGR --> OBS
+    OBS -->|"AX tree + screenshot"| TL
+    RT -->|"ready (starts mic + flag)<br/>entry / error / closed"| CTRL
+    CTRL --> MIRROR
+    MIRROR -->|"watching flag"| MAIN
+    MAIN --> SURFACE
+    RT -->|"teardown: session summary"| RETRO
+    TL -->|"rendered timeline (fenced)"| RETRO
+    RETRO -->|"prompt as a wake hint"| WAKE
+    WAKE -->|"assistant report only"| CONV
+```
+
+## Maintenance Rule
+
+When architecture changes, update the relevant domain architecture document(s) above and keep this index aligned.

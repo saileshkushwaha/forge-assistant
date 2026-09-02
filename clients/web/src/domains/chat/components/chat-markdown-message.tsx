@@ -1,0 +1,570 @@
+/**
+ * Chat-domain MarkdownMessage that composes the design-library primitive
+ * with OAuth-aware link handling, forge:// file link support, and inline
+ * media for external URLs, message attachments, and workspace files.
+ */
+
+import {
+  type AnchorHTMLAttributes,
+  isValidElement,
+  memo,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
+import { attachmentsByIdContentGet } from "@/generated/daemon/sdk.gen";
+import { captureError } from "@/lib/sentry/capture-error";
+import {
+  type MarkdownImageComponent,
+  MarkdownMessage,
+  type MarkdownMessageProps,
+} from "@forgeai/design-library";
+import type { DisplayAttachment } from "@/types/attachment-types";
+import { useAttachmentPreview } from "@/domains/chat/components/chat-attachments/use-attachment-preview";
+import { defaultUrlTransform } from "react-markdown";
+import {
+  EXTERNAL_LINK_CLASS,
+  ExternalLinkGlyph,
+  isWebUrl,
+} from "@/components/external-anchor";
+import { handleNativeAnchorClick } from "@/utils/native-anchor";
+
+import {
+  openMarkdownOAuthLinkInPopup,
+  shouldOpenMarkdownLinkInOAuthPopup,
+} from "@/domains/chat/utils/oauth-popup-links";
+import {
+  RedactedCredentialChip,
+  type RedactedCredentialChipProps,
+} from "@/domains/chat/components/redacted-credential-chip";
+import {
+  REDACTED_CREDENTIAL_TAG,
+  rehypeRedactedCredential,
+} from "@/domains/chat/utils/rehype-redacted-credential";
+import { rehypeStreamWordFade } from "@/domains/chat/utils/rehype-stream-word-fade";
+import { rehypeWorkspacePath } from "@/domains/chat/utils/rehype-workspace-path";
+import {
+  toForgeWorkspaceHref,
+  WORKSPACE_PATH_TAG,
+} from "@/domains/chat/utils/workspace-path-links";
+import { WorkspacePathLink } from "@/domains/chat/components/workspace-path-link";
+import { classifyMarkdownHref } from "@/domains/chat/utils/local-file-links";
+import { LocalFileEmbed } from "@/domains/chat/components/local-file/local-file-embed";
+import { LocalFileLink } from "@/domains/chat/components/local-file/local-file-link";
+import { resolveLocalFileTarget } from "@/domains/chat/components/local-file/local-file-target";
+import { toggleLocalFile } from "@/domains/chat/components/local-file/open-local-file";
+import { useTranslation } from "@/i18n";
+
+/** Returns true when `href` is a known `forge://` attachment link. */
+export function isForgeLink(href: string | undefined): boolean {
+  return (
+    href != null &&
+    (href.startsWith("forge://workspace/") ||
+      href.startsWith("forge://host/"))
+  );
+}
+
+/**
+ * Extends react-markdown's default URL sanitization to allow known
+ * `forge://workspace/` and `forge://host/` attachment URIs. Other
+ * `forge://` shapes are rejected to limit protocol-handler attack surface.
+ */
+function forgeUrlTransform(url: string): string {
+  if (isForgeLink(url)) {
+    return url;
+  }
+  return defaultUrlTransform(url);
+}
+
+function OAuthAwareLink({
+  href,
+  children,
+}: Pick<AnchorHTMLAttributes<HTMLAnchorElement>, "href" | "children">) {
+  const opensOAuthPopup = shouldOpenMarkdownLinkInOAuthPopup(href);
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel={opensOAuthPopup ? undefined : "noopener noreferrer"}
+      onClick={(event) => {
+        if (openMarkdownOAuthLinkInPopup(href)) {
+          event.preventDefault();
+          return;
+        }
+        // In the iOS webview a `target="_blank"` anchor silently no-ops;
+        // route through the native opener there (no-op elsewhere).
+        handleNativeAnchorClick(event, href);
+      }}
+      className={EXTERNAL_LINK_CLASS}
+    >
+      {children}
+      {isWebUrl(href) ? <ExternalLinkGlyph /> : null}
+    </a>
+  );
+}
+
+/**
+ * Visible text of a markdown link's children, matching what the rendered
+ * anchor's `textContent` would report. The file-action modal matches this label
+ * against stored attachment filenames, so emphasis, code spans, and the
+ * per-word spans of the streaming reveal all have to flatten to their text.
+ */
+function markdownChildrenText(children: ReactNode): string {
+  if (typeof children === "string") {
+    return children;
+  }
+  if (typeof children === "number") {
+    return String(children);
+  }
+  if (Array.isArray(children)) {
+    return children.map(markdownChildrenText).join("");
+  }
+  if (isValidElement<{ children?: ReactNode }>(children)) {
+    return markdownChildrenText(children.props.children);
+  }
+  return "";
+}
+
+const IMAGE_CLASSES =
+  "my-2 max-w-full max-h-[400px] rounded-lg border border-[var(--border-element)] object-contain";
+
+function ImageErrorFallback({ alt }: { alt: string }) {
+  const { t } = useTranslation("chat");
+  return (
+    <span className="inline-flex items-center gap-1 rounded bg-[var(--surface-sunken)] px-1.5 py-0.5 text-body-small-default text-[var(--content-tertiary)]">
+      {alt
+        ? t("chatMarkdownMessage.imageFailedWithAlt", { alt })
+        : t("chatMarkdownMessage.imageFailed")}
+    </span>
+  );
+}
+
+function InlineImage({ src, alt }: { src: string; alt: string }) {
+  const [failed, setFailed] = useState(false);
+
+  if (failed) {
+    return <ImageErrorFallback alt={alt} />;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      onError={() => setFailed(true)}
+      className={IMAGE_CLASSES}
+    />
+  );
+}
+
+/**
+ * Decode a URL basename for matching against attachment filenames, which are
+ * stored decoded. Falls back to the raw value when the basename contains
+ * malformed percent-encoding (a literal `%` not followed by two hex digits).
+ */
+function decodeBasename(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * The message attachment a `forge://` image src names, when that attachment
+ * holds image bytes. The attachment's own blob is the closest copy of what the
+ * assistant produced, and it carries the transcript's zoom-to-preview modal.
+ *
+ * Attachments rehydrated from message text can arrive without a `mimeType`,
+ * so an absent type is treated as "not known to be an image".
+ */
+function matchingImageAttachment(
+  src: string,
+  attachments: DisplayAttachment[] | undefined,
+): DisplayAttachment | undefined {
+  const pathBasename = decodeBasename(src.split("/").pop() ?? "");
+  const attachment = attachments?.find((a) => a.filename === pathBasename);
+  if (!attachment) {
+    return undefined;
+  }
+  const mimeType: string | undefined = attachment.mimeType;
+  if (mimeType === undefined || !mimeType.startsWith("image/")) {
+    return undefined;
+  }
+  return attachment;
+}
+
+function WorkspaceInlineImage({
+  attachment,
+  alt,
+  assistantId,
+  onOpenPreview,
+}: {
+  attachment: DisplayAttachment;
+  alt: string;
+  assistantId: string | null | undefined;
+  onOpenPreview?: (attachment: DisplayAttachment) => void;
+}) {
+  const { t } = useTranslation("chat");
+  const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!assistantId || attachment.id.startsWith("rehydrated:")) {
+      return;
+    }
+
+    let revoked = false;
+    (async () => {
+      try {
+        const { data, error } = await attachmentsByIdContentGet({
+          path: { assistant_id: assistantId, id: attachment.id },
+          parseAs: "blob",
+          throwOnError: false,
+        });
+        if (revoked) {
+          return;
+        }
+        if (error || !(data instanceof Blob)) {
+          setFailed(true);
+          return;
+        }
+        const url = URL.createObjectURL(data);
+        setObjectUrl(url);
+      } catch (err) {
+        if (!revoked) {
+          setFailed(true);
+          captureError(err, {
+            context: "WorkspaceInlineImage",
+            bestEffort: true,
+          });
+        }
+      }
+    })();
+
+    return () => {
+      revoked = true;
+      setObjectUrl((prev) => {
+        if (prev) {
+          URL.revokeObjectURL(prev);
+        }
+        return null;
+      });
+    };
+  }, [attachment, assistantId]);
+
+  if (failed) {
+    return <ImageErrorFallback alt={alt || attachment.filename} />;
+  }
+
+  if (!objectUrl) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded bg-[var(--surface-sunken)] px-1.5 py-0.5 text-body-small-default text-[var(--content-tertiary)]">
+        {alt
+          ? t("chatMarkdownMessage.loadingImageWithAlt", { alt })
+          : t("chatMarkdownMessage.loadingImage")}
+      </span>
+    );
+  }
+
+  const image = <img src={objectUrl} alt={alt} className={IMAGE_CLASSES} />;
+
+  if (!onOpenPreview) {
+    return image;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpenPreview(attachment)}
+      className="cursor-zoom-in appearance-none border-0 bg-transparent p-0"
+      aria-label={
+              alt
+                ? t("chatMarkdownMessage.expandImageAriaWithAlt", { alt })
+                : t("chatMarkdownMessage.expandImageAria")
+            }
+    >
+      {image}
+    </button>
+  );
+}
+
+export interface ChatMarkdownMessageProps
+  extends Omit<MarkdownMessageProps, "linkComponent" | "imageComponent"> {
+  /**
+   * Fallback for file links the document drawer cannot open: a reference with
+   * no assistant to read it through, or a `forge://host/` link with no
+   * workspace route to its bytes. Everything else opens in the drawer, so this
+   * is not called for it. Receives the full `forge://` href (e.g.
+   * `forge://workspace/scratch/report.pdf`, converted from an absolute or
+   * relative workspace path when the markdown used one) and the visible link
+   * text (e.g. `report.pdf`).
+   *
+   * Pass a stable reference (useCallback) to avoid rebuilding the markdown
+   * component tree on every render.
+   */
+  onForgeLinkClick?: (href: string, linkText: string) => void;
+  /** Message attachments used to resolve `forge://` image URLs. */
+  attachments?: DisplayAttachment[];
+  /** Active assistant ID for fetching attachment content from the daemon. */
+  assistantId?: string | null;
+  /**
+   * Streamed-text reveal sweep (see `rehypeStreamWordFade`): each word is
+   * wrapped in a fade span, and while `"revealing"` the words nearest the
+   * reveal edge are graded toward transparent so the text appears through a
+   * soft left-to-right gradient wipe. Pass `"caughtUp"` once the reveal has
+   * drained the stream backlog so the tail lifts to full opacity (spans stay
+   * mounted, ready for the next chunk). Only enable for the actively-growing
+   * text of a streaming message — the spans cost DOM weight, so settled
+   * content should render plain (`undefined`).
+   */
+  streamWordFade?: "revealing" | "caughtUp";
+  /**
+   * Render redacted-credential sentinels as interactive chips (see
+   * `rehypeRedactedCredential`). Enable ONLY for daemon-persisted content
+   * (assistant text, tool results) — the persist seams neutralize forged
+   * sentinel strings there, so surviving sentinels are redactor-authored.
+   * Never enable for user-authored content: a pasted sentinel-shaped string
+   * must render as literal text, not manufacture a reveal affordance.
+   */
+  redactedCredentialChips?: boolean;
+  /**
+   * Resolve inline code spans that hold a workspace file path into file links
+   * (see `rehypeWorkspacePath`). The resolved link behaves exactly like an
+   * explicit `forge://` link: a click opens the file in the document drawer,
+   * and falls back to `onForgeLinkClick` for the references the drawer cannot
+   * reach. That fallback is also what enables the affordance, so this needs
+   * `onForgeLinkClick` to have any effect.
+   *
+   * Enable only for assistant-authored content. The affordance is a claim
+   * that the assistant is referring to a file it worked with; a path the user
+   * typed is their own prose and should render as they wrote it.
+   */
+  workspacePathLinks?: boolean;
+}
+
+export const ChatMarkdownMessage = memo(function ChatMarkdownMessage({
+  content,
+  className,
+  hardLineBreaks,
+  onForgeLinkClick,
+  attachments,
+  assistantId,
+  streamWordFade,
+  redactedCredentialChips,
+  workspacePathLinks,
+}: ChatMarkdownMessageProps) {
+  const { openPreview, previewModal } = useAttachmentPreview(
+    assistantId,
+    attachments,
+  );
+
+  /**
+   * Click handler for a code span that resolved to a real workspace file. The
+   * affordance is a file link, so it lands where an explicit file link lands:
+   * the drawer, through the same toggle. The modal is the fallback for the
+   * references the drawer cannot reach.
+   */
+  const handleWorkspacePathOpen = useCallback(
+    (href: string, linkText: string) => {
+      const { workspacePath, filename } = resolveLocalFileTarget(href);
+      if (assistantId && workspacePath !== null) {
+        toggleLocalFile(workspacePath, filename, assistantId);
+        return;
+      }
+      onForgeLinkClick?.(href, linkText);
+    },
+    [assistantId, onForgeLinkClick],
+  );
+
+  const linkComponent = useCallback(
+    ({
+      href,
+      children,
+    }: Pick<AnchorHTMLAttributes<HTMLAnchorElement>, "href" | "children">) => {
+      if (href != null && isForgeLink(href)) {
+        // A `forge://host/` link has no workspace route to its bytes, so it
+        // resolves to a null path and only the modal can act on it.
+        const { workspacePath } = resolveLocalFileTarget(href);
+        // The drawer opens every file type now, so it is where a click on a
+        // file link belongs. The modal is the fallback for the references the
+        // drawer cannot reach: no assistant to read the file through, or no
+        // workspace route to its bytes.
+        const drawerCanOpen = !!assistantId && workspacePath !== null;
+        return (
+          <LocalFileLink
+            href={href}
+            workspacePath={workspacePath}
+            assistantId={assistantId ?? undefined}
+            onActivate={
+              onForgeLinkClick && !drawerCanOpen
+                ? () => onForgeLinkClick(href, markdownChildrenText(children))
+                : undefined
+            }
+          >
+            {children}
+          </LocalFileLink>
+        );
+      }
+
+      const target = classifyMarkdownHref(href);
+      if (href != null && target.kind === "local-file") {
+        const { workspacePath } = target;
+        return (
+          <LocalFileLink
+            href={href}
+            workspacePath={workspacePath}
+            assistantId={assistantId ?? undefined}
+            onActivate={
+              onForgeLinkClick && workspacePath !== null && !assistantId
+                ? () =>
+                    onForgeLinkClick(
+                      toForgeWorkspaceHref(workspacePath),
+                      markdownChildrenText(children),
+                    )
+                : undefined
+            }
+          >
+            {children}
+          </LocalFileLink>
+        );
+      }
+
+      return <OAuthAwareLink href={href}>{children}</OAuthAwareLink>;
+    },
+    [onForgeLinkClick, assistantId],
+  );
+
+  const extraRehypePlugins = useMemo(
+    () => [
+      // Upgrade redacted-credential sentinels into chip elements — only for
+      // content the daemon persisted (assistant text, tool results), where
+      // forged sentinel strings are neutralized at the persist seams. User
+      // messages never enable this, so pasted sentinel-shaped text renders
+      // as literal text instead of manufacturing a reveal affordance.
+      ...(redactedCredentialChips
+        ? [rehypeRedactedCredential as import("unified").Pluggable]
+        : []),
+      // Only worth running when a click handler exists to receive the
+      // resolved path — without one the upgraded span renders as plain code
+      // anyway.
+      ...(workspacePathLinks && onForgeLinkClick
+        ? [rehypeWorkspacePath as import("unified").Pluggable]
+        : []),
+      ...(streamWordFade
+        ? [
+            [
+              rehypeStreamWordFade,
+              { caughtUp: streamWordFade === "caughtUp" },
+            ] as import("unified").Pluggable,
+          ]
+        : []),
+    ],
+    [
+      redactedCredentialChips,
+      streamWordFade,
+      workspacePathLinks,
+      onForgeLinkClick,
+    ],
+  );
+
+  const imageComponent: MarkdownImageComponent = useMemo(
+    () =>
+      ({ src, alt }: { src: string; alt: string }) => {
+        // The reference is resolved against the workspace: media renders
+        // inline and anything else renders as a file card.
+        const workspaceEmbed = (
+          <LocalFileEmbed
+            href={src}
+            alt={alt}
+            assistantId={assistantId ?? undefined}
+          />
+        );
+
+        if (isForgeLink(src)) {
+          const attachment = matchingImageAttachment(src, attachments);
+          if (attachment) {
+            return (
+              <WorkspaceInlineImage
+                attachment={attachment}
+                alt={alt}
+                assistantId={assistantId}
+                onOpenPreview={openPreview}
+              />
+            );
+          }
+          return workspaceEmbed;
+        }
+
+        if (classifyMarkdownHref(src).kind === "local-file") {
+          return workspaceEmbed;
+        }
+
+        // `urlTransform` blanks schemes it won't allow through.
+        if (src.length === 0) {
+          return <ImageErrorFallback alt={alt} />;
+        }
+
+        return <InlineImage src={src} alt={alt} />;
+      },
+    [attachments, assistantId, openPreview],
+  );
+
+  // Built per-render (not module-level) so the chip's reveal request is scoped
+  // to THIS transcript's assistant. A static map would leave the chip reading
+  // the globally active assistant, which can differ from the transcript owner
+  // (inspector, document view, multi-assistant surfaces) and reveal the wrong
+  // assistant's credential for a colliding service:field name.
+  //
+  // The chip is keyed by its full identity (assistant + vault coordinates):
+  // when a re-render puts a DIFFERENT sentinel at the same tree position
+  // (transcript snapshot replacing streamed content, edited history), React
+  // would otherwise preserve the old instance's state by position — leaving
+  // a revealed plaintext, or an in-flight reveal response, attached to the
+  // new credential's label. The key change remounts the chip with fresh
+  // state, and any in-flight reveal resolves against the unmounted instance
+  // as a no-op.
+  const extraComponents = useMemo(
+    () => ({
+      [REDACTED_CREDENTIAL_TAG]: (props: RedactedCredentialChipProps) => (
+        <RedactedCredentialChip
+          key={`${assistantId ?? ""}\u0000${props.service ?? ""}\u0000${props.field ?? ""}`}
+          {...props}
+          assistantId={assistantId}
+        />
+      ),
+      [WORKSPACE_PATH_TAG]: (props: { path?: string; raw?: string }) => (
+        <WorkspacePathLink
+          {...props}
+          assistantId={assistantId}
+          onOpen={onForgeLinkClick ? handleWorkspacePathOpen : undefined}
+        />
+      ),
+    }),
+    [assistantId, onForgeLinkClick, handleWorkspacePathOpen],
+  );
+
+  // Both tags are registered together: each is only ever emitted by its own
+  // rehype plugin, so a tag whose plugin didn't run never appears in the tree.
+  const hasExtraComponents =
+    redactedCredentialChips || (workspacePathLinks && onForgeLinkClick);
+
+  return (
+    <>
+      <MarkdownMessage
+        content={content}
+        className={className}
+        hardLineBreaks={hardLineBreaks}
+        linkComponent={linkComponent}
+        imageComponent={imageComponent}
+        urlTransform={forgeUrlTransform}
+        extraRehypePlugins={extraRehypePlugins}
+        extraComponents={hasExtraComponents ? extraComponents : undefined}
+      />
+      {previewModal}
+    </>
+  );
+});

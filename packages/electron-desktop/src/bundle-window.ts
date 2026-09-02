@@ -1,0 +1,85 @@
+/**
+ * Sandboxed renderer window for `.forge` bundles.
+ *
+ * Each bundle gets its own `BrowserWindow` backed by a dedicated
+ * `persist:bundle-{uuid}` session partition. Cookies, localStorage, and
+ * cache are isolated per bundle. The window intentionally omits the main
+ * preload script so there is no `window.forge` bridge; the renderer runs
+ * in full sandbox mode with only the web-platform APIs available.
+ *
+ * Navigation is restricted to the bundle's own `forgeapp://{uuid}/`
+ * origin, and `window.open` is blocked outright, so a bundle cannot
+ * reach another bundle's content or escape into arbitrary web pages.
+ */
+import { BrowserWindow, session } from "electron";
+
+import { getBundlePlatform, FORGEAPP_PROTOCOL } from "./bundle-platform";
+import { createForgeAppHandler } from "./forgeapp-protocol";
+import { hardenedWebPreferences } from "./windows";
+
+const openBundleWindows = new Map<string, BrowserWindow>();
+
+export const openBundleWindow = (
+  uuid: string,
+  entry: string,
+  name: string,
+): BrowserWindow => {
+  const existing = openBundleWindows.get(uuid);
+  if (existing && !existing.isDestroyed()) {
+    existing.focus();
+    return existing;
+  }
+
+  const bundleSession = session.fromPartition(`persist:bundle-${uuid}`, {
+    cache: true,
+  });
+  const platform = getBundlePlatform();
+  platform.denyAllPermissions(bundleSession);
+
+  bundleSession.protocol.handle(
+    FORGEAPP_PROTOCOL,
+    createForgeAppHandler(platform.bundlesRoot()),
+  );
+
+  const win = new BrowserWindow({
+    width: 1024,
+    height: 768,
+    title: name,
+    webPreferences: {
+      ...hardenedWebPreferences(),
+      session: bundleSession,
+      preload: undefined,
+    },
+  });
+
+  const allowedPrefix = `${FORGEAPP_PROTOCOL}://${uuid}/`;
+
+  win.webContents.on("will-navigate", (event, url) => {
+    if (!url.startsWith(allowedPrefix)) {
+      event.preventDefault();
+    }
+  });
+
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+
+  void win.loadURL(`${FORGEAPP_PROTOCOL}://${uuid}/${entry}`);
+
+  openBundleWindows.set(uuid, win);
+  win.on("closed", () => {
+    openBundleWindows.delete(uuid);
+  });
+
+  return win;
+};
+
+export const closeBundleWindow = (uuid: string): void => {
+  const win = openBundleWindows.get(uuid);
+  if (win && !win.isDestroyed()) {
+    win.close();
+  }
+  openBundleWindows.delete(uuid);
+};
+
+export const getOpenBundleWindows = (): string[] => [
+  ...openBundleWindows.keys(),
+];
