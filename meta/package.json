@@ -16,13 +16,13 @@
     "Dockerfile",
     "npm-shrinkwrap.json"
   ],
-  "dependencies": {
-    "@forgeai/assistant": "0.11.8",
-    "@forgeai/cli": "0.11.8",
-    "@forgeai/credential-executor": "0.11.8",
-    "@forgeai/forge-gateway": "0.11.8",
-    "@forgeai/web": "0.11.8"
-  },
+    "dependencies": {
+        "forge.ai/assistant": "0.11.8",
+        "forge.ai/cli": "0.11.8",
+        "forge.ai/credential-executor": "0.11.8",
+        "forge.ai/forge-gateway": "0.11.8",
+        "forge.ai/web": "0.11.8"
+    },
   "overrides": {
     "drizzle-orm": "0.45.2",
     "lodash": "4.18.1",
