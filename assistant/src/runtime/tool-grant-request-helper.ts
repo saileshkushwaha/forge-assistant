@@ -19,11 +19,11 @@ import {
 } from "../channels/gateway-guardian-requests.js";
 import type { ChannelId } from "../channels/types.js";
 import { emitNotificationSignal } from "../notifications/emit-signal.js";
+import { buildForgeCardAffinity } from "../notifications/forge-card-affinity.js";
 import {
   recordApprovalCardDelivery,
   recordGuardianRequestDeliveries,
 } from "../notifications/guardian-delivery-recorder.js";
-import { buildForgeCardAffinity } from "../notifications/forge-card-affinity.js";
 import { getLogger } from "../util/logger.js";
 import { resolveApprovalSourceReference } from "./approval-source-link.js";
 import { getGuardianBinding } from "./channel-verification-service.js";
