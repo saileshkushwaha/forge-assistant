@@ -101,6 +101,9 @@ mock.module("../../../daemon/conversation-registry.js", () => ({
     findBySurfaceCalls.push(surfaceId);
     return memoryBySurface ?? undefined;
   },
+  findConversationOrSubagent: (id: string) => {
+    return memoryById ?? undefined;
+  },
 }));
 
 mock.module("../../../daemon/conversation-store.js", () => ({

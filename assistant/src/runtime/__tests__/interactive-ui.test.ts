@@ -54,6 +54,9 @@ mock.module("../../daemon/conversation-registry.js", () => ({
   findConversation: (_conversationId: string) => {
     return mockConversation ?? undefined;
   },
+  findConversationOrSubagent: (_conversationId: string) => {
+    return mockConversation ?? undefined;
+  },
 }));
 
 mock.module("../../daemon/conversation-surfaces.js", () => ({
