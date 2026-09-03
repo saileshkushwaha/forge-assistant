@@ -10,13 +10,13 @@
  */
 
 import { ConfigError } from "../util/errors.js";
-import { CHATGPT_SUBSCRIPTION_CONNECTION_NAME } from "./inference/auth.js";
-import { isCodexSubscriptionModel } from "./openai/codex-models.js";
 import {
-  getManagedUpstream,
   FORGE_MANAGED_CONNECTION_NAME,
   FORGE_MANAGED_PROVIDER,
+  getManagedUpstream,
 } from "./forge-model-routing.js";
+import { CHATGPT_SUBSCRIPTION_CONNECTION_NAME } from "./inference/auth.js";
+import { isCodexSubscriptionModel } from "./openai/codex-models.js";
 
 /**
  * Error raised when a `provider_connection` reference cannot be resolved

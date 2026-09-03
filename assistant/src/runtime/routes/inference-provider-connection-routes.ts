@@ -19,6 +19,10 @@ import { getIsPlatform } from "../../config/env-registry.js";
 import { getConfigReadOnly } from "../../config/loader.js";
 import { getDb } from "../../persistence/db-connection.js";
 import {
+  FORGE_MANAGED_PROVIDER,
+  isForgeManagedConnection,
+} from "../../providers/forge-model-routing.js";
+import {
   type Auth,
   AuthSchema,
   CHATGPT_SUBSCRIPTION_CONNECTION_NAME,
@@ -44,10 +48,6 @@ import {
   testInferenceConnection,
 } from "../../providers/inference/endpoint-probe.js";
 import { PROVIDER_CATALOG } from "../../providers/model-catalog.js";
-import {
-  isForgeManagedConnection,
-  FORGE_MANAGED_PROVIDER,
-} from "../../providers/forge-model-routing.js";
 import { credentialKey } from "../../security/credential-key.js";
 import { deleteSecureKeyAsync } from "../../security/secure-keys.js";
 import {

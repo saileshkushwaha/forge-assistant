@@ -6,8 +6,8 @@
  * conveniences (`getDefaultProvider()` without an argument,
  * `setDefaultProvider`) live in `default-provider.ts`.
  */
-import { CHATGPT_SUBSCRIPTION_CONNECTION_NAME } from "../providers/inference/auth.js";
 import { FORGE_MANAGED_CONNECTION_NAME } from "../providers/forge-model-routing.js";
+import { CHATGPT_SUBSCRIPTION_CONNECTION_NAME } from "../providers/inference/auth.js";
 import type { DefaultProviderConfig } from "./schemas/llm.js";
 import type { AssistantConfig } from "./types.js";
 

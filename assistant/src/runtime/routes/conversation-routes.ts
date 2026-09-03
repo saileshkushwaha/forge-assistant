@@ -154,11 +154,11 @@ import {
 import { assistantEventHub, broadcastMessage } from "../assistant-event-hub.js";
 import { getCurrentSeq } from "../assistant-stream-state.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
+import { reResolveTrustOnResetDrift } from "../guardian-forge-migration.js";
 import {
   type GuardianPendingScope,
   routeGuardianReply,
 } from "../guardian-reply-router.js";
-import { reResolveTrustOnResetDrift } from "../guardian-forge-migration.js";
 import type {
   ApprovalConversationGenerator,
   RuntimeAttachmentMetadata,

@@ -91,9 +91,9 @@ import {
   NotFoundError,
   UnprocessableEntityError,
 } from "./errors.js";
+import { resolveForgeActorTrustContext } from "./forge-actor-trust.js";
 import { setInferenceProfileSession } from "./inference-profile-session-handler.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
-import { resolveForgeActorTrustContext } from "./forge-actor-trust.js";
 
 const log = getLogger("conversation-management-routes");
 

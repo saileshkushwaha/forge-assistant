@@ -13,10 +13,10 @@
  * identically.
  */
 
+import { getManagedUpstream } from "../../providers/forge-model-routing.js";
 import { ROUTING_IDENTITY_PROVIDERS } from "../../providers/inference/auth.js";
 import type { ConnectionAvailability } from "../../providers/inference/connection-availability.js";
 import { forgeConnectionAvailability } from "../../providers/inference/connection-availability.js";
-import { getManagedUpstream } from "../../providers/forge-model-routing.js";
 
 /**
  * How the caller should repair the selection. `create`/`update` describe an

@@ -30,10 +30,10 @@ import {
 } from "./auth.js";
 import {
   createConnection,
+  FORGE_MANAGED_CONNECTION_NAME,
   getConnection,
   listConnections,
   seedCanonicalConnections,
-  FORGE_MANAGED_CONNECTION_NAME,
 } from "./connections.js";
 
 const log = getLogger("provider-connections-backfill");

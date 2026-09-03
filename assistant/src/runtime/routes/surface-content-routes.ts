@@ -13,12 +13,12 @@ import { getLogger } from "../../util/logger.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { resolveCapabilities } from "../capabilities.js";
 import { BadRequestError, NotFoundError } from "./errors.js";
+import { resolveForgeActorTrustContext } from "./forge-actor-trust.js";
 import {
   findPersistedSurfaceState,
   resolveSurfaceConversation,
 } from "./surface-conversation-resolver.js";
 import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
-import { resolveForgeActorTrustContext } from "./forge-actor-trust.js";
 
 const log = getLogger("surface-content-routes");
 

@@ -42,6 +42,12 @@ import {
   isConnectionCompatibleWithModel,
 } from "./connection-model-compat.js";
 import {
+  FORGE_MANAGED_CONNECTION_NAME,
+  getManagedUpstream,
+  isForgeManagedConnection,
+  MANAGED_ROUTABLE_PROVIDERS,
+} from "./forge-model-routing.js";
+import {
   ROUTING_IDENTITY_PROVIDERS,
   VALID_CONNECTION_PROVIDERS,
 } from "./inference/auth.js";
@@ -60,12 +66,6 @@ import {
   resolveRoutingIdentity,
 } from "./routing-identity.js";
 import type { Provider } from "./types.js";
-import {
-  getManagedUpstream,
-  isForgeManagedConnection,
-  MANAGED_ROUTABLE_PROVIDERS,
-  FORGE_MANAGED_CONNECTION_NAME,
-} from "./forge-model-routing.js";
 
 export { ConnectionResolutionError, resolveRoutingIdentity };
 export { dispatchProviderResolvable } from "./provider-resolvability.js";

@@ -8,6 +8,7 @@ import { migrateCreateProviderConnections } from "../../persistence/migrations/2
 import { migrateProviderConnectionStatusLabel } from "../../persistence/migrations/244-provider-connection-status-label.js";
 import { migrateProviderConnectionBaseUrlAndModels } from "../../persistence/migrations/250-provider-connection-base-url-and-models.js";
 import * as schema from "../../persistence/schema/index.js";
+import { isForgeManagedConnection } from "../forge-model-routing.js";
 import { createAdapterFromConnection } from "../inference/adapter-factory.js";
 import type { Auth, ProviderConnection } from "../inference/auth.js";
 import type { ResolvedAuth } from "../inference/auth.js";
@@ -17,7 +18,6 @@ import {
   getConnection,
   listConnections,
 } from "../inference/connections.js";
-import { isForgeManagedConnection } from "../forge-model-routing.js";
 
 function setupDb(): DrizzleDb {
   const sqlite = new Database(":memory:");

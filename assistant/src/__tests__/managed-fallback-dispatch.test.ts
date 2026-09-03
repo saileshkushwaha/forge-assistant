@@ -21,6 +21,7 @@ import {
   resetFallbackBreaker,
   shouldSkipPrimary,
 } from "../providers/fallback-breaker.js";
+import { getManagedUpstream } from "../providers/forge-model-routing.js";
 import { createAdapterFromConnection } from "../providers/inference/adapter-factory.js";
 import type {
   ProviderConnection,
@@ -31,7 +32,6 @@ import type {
   Provider,
   ProviderResponse,
 } from "../providers/types.js";
-import { getManagedUpstream } from "../providers/forge-model-routing.js";
 import { credentialKey } from "../security/credential-key.js";
 import { setSecureKeyAsync } from "../security/secure-keys.js";
 import { setConfig } from "./helpers/set-config.js";

@@ -34,6 +34,13 @@ import { AnthropicProvider } from "../anthropic/client.js";
 import { AtlasCloudProvider } from "../atlascloud/client.js";
 import { BasetenProvider } from "../baseten/client.js";
 import { FireworksProvider } from "../fireworks/client.js";
+import { ForgeProvider } from "../forge/client.js";
+import {
+  FORGE_MANAGED_PROVIDER,
+  getManagedUpstream,
+  isForgeManagedConnection,
+  MANAGED_ROUTABLE_PROVIDERS,
+} from "../forge-model-routing.js";
 import { GeminiProvider } from "../gemini/client.js";
 import { MinimaxProvider } from "../minimax/client.js";
 import { PROVIDER_CATALOG } from "../model-catalog.js";
@@ -48,13 +55,6 @@ import { RetryProvider } from "../retry.js";
 import { TogetherProvider } from "../together/client.js";
 import type { Provider, SendMessageOptions } from "../types.js";
 import { UsageTrackingProvider } from "../usage-tracking.js";
-import { ForgeProvider } from "../forge/client.js";
-import {
-  getManagedUpstream,
-  isForgeManagedConnection,
-  MANAGED_ROUTABLE_PROVIDERS,
-  FORGE_MANAGED_PROVIDER,
-} from "../forge-model-routing.js";
 import { VercelAIGatewayProvider } from "../vercel-ai-gateway/client.js";
 import type { ResolvedAuth } from "./auth.js";
 import type { ProviderConnection } from "./auth.js";

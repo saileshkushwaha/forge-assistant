@@ -41,8 +41,8 @@ import { getDb } from "../../../persistence/db-connection.js";
 import { initializeDb } from "../../../persistence/db-init.js";
 import { conversations } from "../../../persistence/schema/index.js";
 import { BadRequestError, NotFoundError } from "../errors.js";
-import type { RouteDefinition } from "../types.js";
 import * as forgeActorTrust from "../forge-actor-trust.js";
+import type { RouteDefinition } from "../types.js";
 
 /**
  * Run something in the window the handler opens between accepting the request

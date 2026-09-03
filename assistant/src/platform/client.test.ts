@@ -44,8 +44,8 @@ mock.module("../security/credential-key.js", () => ({
 
 import {
   _resetConfiguredProbeCacheForTests,
-  isPlatformClientConfigured,
   ForgePlatformClient,
+  isPlatformClientConfigured,
 } from "./client.js";
 
 // ---------------------------------------------------------------------------

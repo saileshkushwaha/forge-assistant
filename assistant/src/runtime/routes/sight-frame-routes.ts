@@ -20,8 +20,8 @@ import { getConversation } from "../../persistence/conversation-crud.js";
 import { ACTOR_PRINCIPALS } from "../auth/route-policy.js";
 import { resolveOrThrow } from "./conversation-management-routes.js";
 import { BadRequestError, NotFoundError } from "./errors.js";
-import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 import { resolveForgeActorTrustContext } from "./forge-actor-trust.js";
+import type { RouteDefinition, RouteHandlerArgs } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Handlers

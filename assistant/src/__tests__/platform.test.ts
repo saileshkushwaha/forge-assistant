@@ -5,6 +5,7 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test";
 
 import {
   ensureDataDir,
+  forgeRoot,
   formatHomeRelativePath,
   getDataDir,
   getDbPath,
@@ -20,7 +21,6 @@ import {
   getWorkspacePromptPath,
   getWorkspaceSkillsDir,
   getXdgForgeConfigDirName,
-  forgeRoot,
 } from "../util/platform.js";
 
 const originalWorkspaceDir = process.env.FORGE_WORKSPACE_DIR;

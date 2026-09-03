@@ -22,12 +22,12 @@ import { getGuardianDelivery } from "../contacts/guardian-delivery-reader.js";
 import { isKeptOutStatus } from "../contacts/member-status.js";
 import type { ChannelStatus } from "../contacts/types.js";
 import { emitNotificationSignal } from "../notifications/emit-signal.js";
+import { buildForgeCardAffinity } from "../notifications/forge-card-affinity.js";
 import {
   recordApprovalCardDelivery,
   recordGuardianRequestDeliveries,
 } from "../notifications/guardian-delivery-recorder.js";
 import type { GuardianResolutionSource } from "../notifications/signal.js";
-import { buildForgeCardAffinity } from "../notifications/forge-card-affinity.js";
 import { IntegrityError } from "../util/errors.js";
 import { getLogger } from "../util/logger.js";
 import { resolveAnchoredGuardian } from "./anchored-guardian.js";

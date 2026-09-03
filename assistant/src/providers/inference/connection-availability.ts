@@ -27,18 +27,18 @@ import {
   connectionProviderKind,
   resolveEntryConnectionName,
 } from "../connection-resolution.js";
+import {
+  FORGE_MANAGED_CONNECTION_NAME,
+  FORGE_MANAGED_PROVIDER,
+  isForgeManagedConnection,
+  MANAGED_ROUTABLE_PROVIDERS,
+} from "../forge-model-routing.js";
 import { PROVIDER_CATALOG } from "../model-catalog.js";
 import { resolveManagedProxyContext } from "../platform-proxy/context.js";
 import {
   ConnectionResolutionError,
   resolveRoutingIdentity,
 } from "../routing-identity.js";
-import {
-  isForgeManagedConnection,
-  MANAGED_ROUTABLE_PROVIDERS,
-  FORGE_MANAGED_CONNECTION_NAME,
-  FORGE_MANAGED_PROVIDER,
-} from "../forge-model-routing.js";
 import { ROUTING_IDENTITY_PROVIDERS } from "./auth.js";
 import { getConnection, listConnections } from "./connections.js";
 

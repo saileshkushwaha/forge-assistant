@@ -5,11 +5,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { z } from "zod";
 
 import { setOverridesForTesting } from "../../__tests__/feature-flag-test-helpers.js";
+import { getManagedUpstream } from "../../providers/forge-model-routing.js";
 import {
   catalogMaxOutputTokens,
   isModelInCatalog,
 } from "../../providers/model-catalog.js";
-import { getManagedUpstream } from "../../providers/forge-model-routing.js";
 import { BALANCED_MODEL_EXPERIMENT_FLAG_KEY } from "../balanced-model-experiment.js";
 import {
   CODE_DEFAULT_PROFILE_ENTRIES,

@@ -1,7 +1,7 @@
 import { z } from "zod";
 
-import { PROVIDER_CATALOG } from "../model-catalog.js";
 import { FORGE_MANAGED_PROVIDER } from "../forge-model-routing.js";
+import { PROVIDER_CATALOG } from "../model-catalog.js";
 
 // ---------------------------------------------------------------------------
 // Auth discriminated union (stored in provider_connections.auth as JSON)

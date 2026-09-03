@@ -17,9 +17,9 @@ mock.module("../../../platform/client.js", () => ({
 }));
 
 import {
-  sttErrorFromManagedSpeech,
   forgeManagedSpeechAvailable,
   forgeManagedTranscribe,
+  sttErrorFromManagedSpeech,
 } from "../forge-managed.js";
 
 describe("forgeManagedSpeechAvailable", () => {

@@ -46,10 +46,10 @@ import {
 } from "./embedding-types.js";
 import { withQdrantBreaker } from "./qdrant-circuit-breaker.js";
 import {
+  type ForgeQdrantClient,
   getQdrantClient,
   initQdrantClient,
   resolveQdrantUrl,
-  type ForgeQdrantClient,
 } from "./qdrant-client.js";
 
 const log = getLogger("plugin-index");

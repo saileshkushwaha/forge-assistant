@@ -19,11 +19,11 @@ import type { QuestionEntry } from "../api/events/question-request.js";
 import type { GuardianRequestWire } from "../channels/gateway-guardian-requests.js";
 import type { TrustContext } from "../daemon/trust-context-types.js";
 import { emitNotificationSignal } from "../notifications/emit-signal.js";
+import { buildForgeCardAffinity } from "../notifications/forge-card-affinity.js";
 import {
   recordApprovalCardDelivery,
   recordGuardianRequestDeliveries,
 } from "../notifications/guardian-delivery-recorder.js";
-import { buildForgeCardAffinity } from "../notifications/forge-card-affinity.js";
 import { canonicalizeInboundIdentity } from "../util/canonicalize-identity.js";
 import { getLogger } from "../util/logger.js";
 import { DAEMON_INTERNAL_ASSISTANT_ID } from "./assistant-scope.js";

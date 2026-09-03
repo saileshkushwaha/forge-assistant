@@ -5,12 +5,12 @@ import type { DrizzleDb } from "../../persistence/db-connection.js";
 import { providerConnections } from "../../persistence/schema/inference.js";
 import { normalizeCredentialRef } from "../../security/credential-key.js";
 import { getLogger } from "../../util/logger.js";
-import { clearConnectionProviderCache } from "../registry.js";
 import {
-  isForgeManagedConnection,
   FORGE_MANAGED_CONNECTION_NAME,
   FORGE_MANAGED_PROVIDER,
+  isForgeManagedConnection,
 } from "../forge-model-routing.js";
+import { clearConnectionProviderCache } from "../registry.js";
 
 export { FORGE_MANAGED_CONNECTION_NAME };
 import {

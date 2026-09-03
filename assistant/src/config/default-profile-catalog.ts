@@ -1,3 +1,4 @@
+import { getManagedUpstream } from "../providers/forge-model-routing.js";
 import { ROUTING_IDENTITY_PROVIDERS } from "../providers/inference/auth.js";
 import {
   catalogMaxOutputTokens,
@@ -6,7 +7,6 @@ import {
 import { resolveModelIntent } from "../providers/model-intents.js";
 import { isCodexSubscriptionModel } from "../providers/openai/codex-models.js";
 import type { ModelIntent } from "../providers/types.js";
-import { getManagedUpstream } from "../providers/forge-model-routing.js";
 import { getBalancedModelExperimentArm } from "./balanced-model-experiment.js";
 import {
   BACKUP_PROFILE_KEYS,

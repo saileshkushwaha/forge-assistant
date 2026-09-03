@@ -44,8 +44,8 @@ import {
   LLMSchema,
   type ProfileEntry,
 } from "../config/schemas/llm.js";
-import { isModelInCatalog } from "../providers/model-catalog.js";
 import { getManagedUpstream } from "../providers/forge-model-routing.js";
+import { isModelInCatalog } from "../providers/model-catalog.js";
 import { setOverridesForTesting } from "./feature-flag-test-helpers.js";
 
 const forge: DefaultProviderConfig = { provider: "forge" };

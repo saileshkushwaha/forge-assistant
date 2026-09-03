@@ -1,14 +1,14 @@
 import { z } from "zod";
 
+import {
+  FORGE_MANAGED_CONNECTION_NAME,
+  MANAGED_ROUTABLE_PROVIDERS,
+} from "../providers/forge-model-routing.js";
 import { ROUTING_IDENTITY_PROVIDERS } from "../providers/inference/auth.js";
 import {
   getCatalogProviderForModel,
   isModelInCatalog,
 } from "../providers/model-catalog.js";
-import {
-  MANAGED_ROUTABLE_PROVIDERS,
-  FORGE_MANAGED_CONNECTION_NAME,
-} from "../providers/forge-model-routing.js";
 import { CALL_SITE_DEFAULTS } from "./call-site-defaults.js";
 import {
   isDefaultProfileKey,

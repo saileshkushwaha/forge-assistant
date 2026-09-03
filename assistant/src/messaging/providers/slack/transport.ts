@@ -1,5 +1,5 @@
-import type { KnownBlock } from "@slack/types";
 import { ChannelDeliveryError } from "@forgeai/gateway-client/http-delivery";
+import type { KnownBlock } from "@slack/types";
 
 import { getLogger } from "../../../util/logger.js";
 import type { ChannelTransport } from "../channel-transport.js";
